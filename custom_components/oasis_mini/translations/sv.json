@@ -1,0 +1,165 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "data": {
+          "email": "E-post",
+          "password": "Lösenord"
+        }
+      },
+      "reconfigure": {
+        "data": {
+          "email": "E-post",
+          "password": "Lösenord"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Kunde inte ansluta",
+      "invalid_auth": "Felaktig autentisering",
+      "invalid_host": "Felaktigt värdnamn eller IP-adress",
+      "timeout_connect": "Det tog för lång tid att ansluta",
+      "unknown": "Oväntat fel"
+    },
+    "abort": {
+      "already_configured": "Kontot är redan konfigurerat",
+      "reauth_successful": "Återautentisering lyckades",
+      "reconfigure_successful": "Omkonfigurering lyckades",
+      "wrong_account": "Kontot som används för integrationen bör inte ändras"
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "description": "Ange dina molninloggningsuppgifter för att få mer information om denna enhet",
+        "data": {
+          "email": "E-post",
+          "password": "Lösenord"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Ogiltig autentisering"
+    }
+  },
+  "entity": {
+    "button": {
+      "random_track": {
+        "name": "Spela slumpmässigt spår"
+      },
+      "sleep": {
+        "name": "Vila"
+      }
+    },
+    "binary_sensor": {
+      "busy": {
+        "name": "Upptagen"
+      },
+      "wifi_status": {
+        "name": "Wi-Fi status"
+      }
+    },
+    "light": {
+      "led": {
+        "name": "LED"
+      }
+    },
+    "number": {
+      "ball_speed": {
+        "name": "Bollhastighet"
+      },
+      "led_speed": {
+        "name": "LED-hastighet"
+      }
+    },
+    "select": {
+      "autoplay": {
+        "name": "Autoplay",
+        "state": {
+          "1": "Av",
+          "0": "Omedelbart",
+          "2": "Efter 5 minuter",
+          "3": "Efter 10 minuter",
+          "4": "Efter 30 minuter",
+          "6": "Efter 1 timma",
+          "7": "Efter 6 timmar",
+          "8": "Efter 12 timmar",
+          "5": "Efter 24 timmar"
+        }
+      },
+      "playlist": {
+        "name": "Spellista"
+      },
+      "queue": {
+        "name": "Kö"
+      }
+    },
+    "sensor": {
+      "download_progress": {
+        "name": "Nedladdningsförlopp"
+      },
+      "drawing_progress": {
+        "name": "Ritningsförlopp"
+      },
+      "error": {
+        "name": "Fel",
+        "state": {
+          "0": "Inget",
+          "1": "Ett fel har inträffat vid läsning av minnet",
+          "2": "Ett fel har inträffat vid start av Wifi",
+          "3": "Ett fel har inträffat vid start av DNS-inställningar för din maskin",
+          "4": "Misslyckades att öppna fil att skriva in",
+          "5": "Inte tillräckligt minne till att utföra uppdateringen",
+          "6": "Ett fel har inträffat vid försök att uppdatera ditt system",
+          "7": "Ett fel har inträffat vid försök att hämta en ny version av programvaran",
+          "8": "Ett fel har inträffat vid inläsning av uppdateringsfilen",
+          "9": "Misslyckades med att starta nedladdning för uppdateringsfilen",
+          "10": "Ett fel har inträffat vid starten för nedladdning av jobbfilen",
+          "11": "Ett fel har inträffat vid öppning av filmapp",
+          "12": "Misslyckades att ta bort fil",
+          "13": "Ett fel har inträffat vid öppning av jobbfil",
+          "14": "Du har fel strömadapter",
+          "15": "Misslyckades med att uppdatera enhetens IP-adress på Oasis Server",
+          "16": "Din enhet misslyckades att centrera sig själv",
+          "17": "Det verkar vara ett problem med din Oasis enhet",
+          "18": "Ett fel har inträffat vid nedladdning av jobbfilen"
+        }
+      },
+      "last_updated": {
+        "name": "Senast uppdaterad"
+      },
+      "led_color_id": {
+        "name": "LED-färg-ID"
+      },
+      "status": {
+        "name": "Status",
+        "state": {
+          "booting": "Startar",
+          "stopped": "Stoppad",
+          "centering": "Centrerar",
+          "playing": "Spelar",
+          "paused": "Pausad",
+          "sleeping": "Vilar",
+          "error": "Fel",
+          "updating": "Uppdaterar",
+          "downloading": "Hämtar",
+          "busy": "Upptagen",
+          "live": "Ritar"
+        }
+      }
+    },
+    "switch": {
+      "auto_clean": {
+        "name": "Autorengöring"
+      }
+    }
+  },
+  "exceptions": {
+    "device_busy": {
+      "message": "{name} är för nuvarande upptagen och kan inte modifieras"
+    },
+    "invalid_media": {
+      "message": "Felaktig media: {media}"
+    }
+  }
+}
