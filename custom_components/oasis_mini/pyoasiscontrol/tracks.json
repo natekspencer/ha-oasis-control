@@ -2105,6 +2105,24 @@
     "author": "Luany Camila",
     "reduced_svg_content_new": 23348
   },
+  "10023": {
+    "id": 10023,
+    "name": "Christmas",
+    "code": "christmas-20",
+    "description": null,
+    "image": "2025/12/58188129361d9a3bb52fe00ad1cf9abd.svg",
+    "category_id": null,
+    "tags": "",
+    "public": 1,
+    "author_id": 39710,
+    "release": 1,
+    "is_cleaner": 0,
+    "pattern_id": null,
+    "clean_type": "clean_out",
+    "png_image": "2025/12/7f0f6ea6bfd6e8e01a3c016403c25545.png",
+    "author": "steve svancara",
+    "reduced_svg_content_new": 5339
+  },
   "5087": {
     "id": 5087,
     "name": "Christmas Angel",
@@ -6749,6 +6767,24 @@
     "author": "Kinetic Oasis",
     "reduced_svg_content_new": 8302
   },
+  "11792": {
+    "id": 11792,
+    "name": "Irish Top Hat",
+    "code": "irish-top-hat-1",
+    "description": null,
+    "image": "2026/03/6af6a7639da6be15a9d35fd031b21ea5.svg",
+    "category_id": null,
+    "tags": "",
+    "public": 1,
+    "author_id": 61336,
+    "release": 1,
+    "is_cleaner": 0,
+    "pattern_id": null,
+    "clean_type": "clean_out",
+    "png_image": "2026/03/b2512b3ab02f151b59cbe4b6c2133891.png",
+    "author": "Nina Aust",
+    "reduced_svg_content_new": 11729
+  },
   "5076": {
     "id": 5076,
     "name": "It’s Fall Y’all",
@@ -8098,6 +8134,24 @@
     "png_image": "2024/07/5b8954e0d62998cdfd9fccbc8b63173e.png",
     "author": "Leuerken",
     "reduced_svg_content_new": 77291
+  },
+  "11383": {
+    "id": 11383,
+    "name": "Medusa",
+    "code": "medusa-2",
+    "description": null,
+    "image": "2026/02/4ccbde4815a23af6286e0a1d727929b6.svg",
+    "category_id": null,
+    "tags": "",
+    "public": 1,
+    "author_id": 109641,
+    "release": 1,
+    "is_cleaner": 0,
+    "pattern_id": null,
+    "clean_type": "clean_out",
+    "png_image": "2026/02/8bb86c999d8cd4389399b6148ff7a877.png",
+    "author": "Chris Amezcua",
+    "reduced_svg_content_new": 12747
   },
   "6078": {
     "id": 6078,
