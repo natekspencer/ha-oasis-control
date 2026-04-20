@@ -307,6 +307,15 @@ class OasisCloudClient:
 
             return self._software_details
 
+    async def async_get_mqtt_token(self) -> str:
+        """Get a token to interface with the MQTT server."""
+        response = await self._async_auth_request(
+            "POST", urljoin(BASE_URL, "api/v2/auth/mqtt/login")
+        )
+        token = response.get("token") if isinstance(response, dict) else None
+        _LOGGER.debug("MQTT login succeeded, token set: %s", bool(token))
+        return token
+
     async def _async_auth_request(self, method: str, url: str, **kwargs: Any) -> Any:
         """
         Perform a cloud API request using the stored access token.
