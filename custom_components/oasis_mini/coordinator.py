@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import logging
 from typing import TYPE_CHECKING
 
+from homeassistant.const import CONF_EMAIL
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_send
@@ -166,7 +167,9 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
 
                 # Ensure MQTT is running and devices are registered
                 if not self.mqtt_client.is_running:
-                    self.mqtt_client.start()
+                    username = self.config_entry.data[CONF_EMAIL]
+                    mqtt_token = await self.cloud_client.async_get_mqtt_token()
+                    self.mqtt_client.start(username, mqtt_token)
                 self.mqtt_client.register_devices(devices)
 
                 # Best-effort playlists
