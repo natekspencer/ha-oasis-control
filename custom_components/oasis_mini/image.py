@@ -12,6 +12,7 @@ from . import OasisDeviceConfigEntry, setup_platform_from_coordinator
 from .coordinator import OasisDeviceCoordinator
 from .entity import OasisDeviceEntity
 from .pyoasiscontrol import OasisDevice
+from .pyoasiscontrol.utils import get_image_url_from_track
 
 
 async def async_setup_entry(
@@ -117,7 +118,9 @@ class OasisDeviceImageEntity(OasisDeviceEntity, ImageEntity):
             if device.track and device.track.get("svg_content"):
                 self._attr_image_url = UNDEFINED
             else:
-                self._attr_image_url = device.track_image_url
+                self._attr_image_url = get_image_url_from_track(
+                    device.track, device.progress
+                )
 
         if self.hass:
             super()._handle_coordinator_update()
