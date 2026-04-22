@@ -441,11 +441,13 @@ class OasisDevice:
         Returns:
             progress_percent (float | None): Percentage of the drawing completed (0-100), clamped to 100; `None` if no track or SVG content is available.
         """
-        if not (self.track and (svg_content := self.track.get("svg_content"))):
+        if not (track := self.track):
             return None
-        svg_content = decrypt_svg_content(svg_content)
-        paths = svg_content.split("L")
-        total = self.track.get("reduced_svg_content_new", 0) or len(paths)
+        total = track.get("file_lines") or track.get("reduced_svg_content_new") or 0
+        if not total and (svg_content := self.track.get("svg_content")):
+            svg_content = decrypt_svg_content(svg_content)
+            paths = svg_content.split("L")
+            total = total or len(paths)
         percent = (100 * self.progress) / total
         return min(percent, 100)
 
