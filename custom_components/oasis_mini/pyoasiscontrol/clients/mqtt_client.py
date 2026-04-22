@@ -6,7 +6,7 @@ import asyncio
 from datetime import UTC, datetime
 import logging
 import ssl
-from typing import Any, Final, Iterable
+from typing import Any, Coroutine, Final, Iterable
 
 import aiomqtt
 
@@ -215,12 +215,16 @@ class OasisMqttClient(OasisClientProtocol):
             if not device.is_sleeping:
                 await self.async_get_all(device)
 
-    def start(self, username: str, token: str) -> None:
+    def start(
+        self, username: str, get_token_method: Coroutine[None, None, str]
+    ) -> None:
         """Start MQTT connection loop."""
         if self._loop_task is None or self._loop_task.done():
             self._stop_event.clear()
             loop = asyncio.get_running_loop()
-            self._loop_task = loop.create_task(self._mqtt_loop(username, token))
+            self._loop_task = loop.create_task(
+                self._mqtt_loop(username, get_token_method)
+            )
 
     async def async_close(self) -> None:
         """Close connection loop and MQTT client."""
@@ -687,7 +691,9 @@ class OasisMqttClient(OasisClientProtocol):
             )
             await self._enqueue_command(serial, payload)
 
-    async def _mqtt_loop(self, username: str, token: str) -> None:
+    async def _mqtt_loop(
+        self, username: str, get_token_method: Coroutine[None, None, str]
+    ) -> None:
         """
         Run the MQTT WebSocket connection loop that maintains connection, subscriptions,
         and message handling.
@@ -712,7 +718,7 @@ class OasisMqttClient(OasisClientProtocol):
                     transport="websockets",
                     tls_context=tls_context,
                     username=username,
-                    password=token,
+                    password=await get_token_method(),
                     keepalive=30,
                     websocket_path=f"/{PATH}",
                 ) as client:

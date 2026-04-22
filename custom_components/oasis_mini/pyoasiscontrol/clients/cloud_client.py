@@ -313,7 +313,7 @@ class OasisCloudClient:
             "POST", urljoin(BASE_URL, "api/v2/auth/mqtt/login")
         )
         token = response.get("token") if isinstance(response, dict) else None
-        _LOGGER.debug("MQTT login succeeded, token set: %s", bool(token))
+        _LOGGER.debug("MQTT login succeeded, token returned: %s", bool(token))
         return token
 
     async def _async_auth_request(self, method: str, url: str, **kwargs: Any) -> Any:
