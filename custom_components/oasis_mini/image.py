@@ -89,7 +89,9 @@ class OasisDeviceImageEntity(OasisDeviceEntity, ImageEntity):
         """
         if not self._cached_image:
             if (svg := self.device.create_svg()) is None:
-                self._attr_image_url = self.device.track_image_url
+                self._attr_image_url = get_image_url_from_track(
+                    self.device.track, self.device.progress
+                )
                 self._attr_image_last_updated = dt_util.now()
                 return None
             self._attr_content_type = "image/svg+xml"

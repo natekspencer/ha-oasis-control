@@ -443,11 +443,20 @@ class OasisDevice:
         """
         if not (track := self.track):
             return None
-        total = track.get("file_lines") or track.get("reduced_svg_content_new") or 0
-        if not total and (svg_content := self.track.get("svg_content")):
-            svg_content = decrypt_svg_content(svg_content)
-            paths = svg_content.split("L")
-            total = total or len(paths)
+        total = _parse_int(
+            track.get("file_lines") or track.get("reduced_svg_content_new")
+        )
+        if not total and (svg_content := track.get("svg_content")):
+            try:
+                svg_content = decrypt_svg_content(svg_content)
+            except Exception:
+                _LOGGER.exception(
+                    "Error decrypting SVG content for track %s", track.get("id")
+                )
+                return None
+            total = len(svg_content.split("L"))
+        if not total:
+            return None
         percent = (100 * self.progress) / total
         return min(percent, 100)
 
