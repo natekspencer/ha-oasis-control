@@ -12,6 +12,7 @@ from . import OasisDeviceConfigEntry, setup_platform_from_coordinator
 from .coordinator import OasisDeviceCoordinator
 from .entity import OasisDeviceEntity
 from .pyoasiscontrol import OasisDevice
+from .pyoasiscontrol.utils import get_image_url_from_track
 
 
 async def async_setup_entry(
@@ -88,7 +89,9 @@ class OasisDeviceImageEntity(OasisDeviceEntity, ImageEntity):
         """
         if not self._cached_image:
             if (svg := self.device.create_svg()) is None:
-                self._attr_image_url = self.device.track_image_url
+                self._attr_image_url = get_image_url_from_track(
+                    self.device.track, self.device.progress
+                )
                 self._attr_image_last_updated = dt_util.now()
                 return None
             self._attr_content_type = "image/svg+xml"
@@ -98,9 +101,16 @@ class OasisDeviceImageEntity(OasisDeviceEntity, ImageEntity):
     @callback
     def _handle_coordinator_update(self) -> None:
         """
-        Update image metadata and cached image when the coordinator reports changes to the device's track or progress.
+        Update image metadata and cached image when the coordinator reports changes to
+        the device's track or progress.
 
-        If the device's track_id or progress changed and updates are allowed (the device is playing or there is no cached image), update image last-updated timestamp, record the new track_id and progress, clear the cached image to force regeneration, and set the image URL to UNDEFINED when the track contains inline SVG content or to the device's track_image_url otherwise. When Home Assistant is available, propagate the update to the base class handler.
+        If the device's track_id or progress changed and updates are allowed (the device
+        is playing or there is no cached image), update image last-updated timestamp,
+        record the new track_id and progress, clear the cached image to force
+        regeneration, and set the image URL to UNDEFINED when the track contains inline
+        SVG content or to the progress-aware URL derived from the track (via
+        get_image_url_from_track) otherwise. When Home Assistant is available, propagate
+         the update to the base class handler.
         """
         device = self.device
 
@@ -117,7 +127,9 @@ class OasisDeviceImageEntity(OasisDeviceEntity, ImageEntity):
             if device.track and device.track.get("svg_content"):
                 self._attr_image_url = UNDEFINED
             else:
-                self._attr_image_url = device.track_image_url
+                self._attr_image_url = get_image_url_from_track(
+                    device.track, device.progress
+                )
 
         if self.hass:
             super()._handle_coordinator_update()

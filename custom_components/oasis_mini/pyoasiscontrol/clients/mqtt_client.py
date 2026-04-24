@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 from datetime import UTC, datetime
 import logging
 import ssl
-from typing import Any, Final, Iterable
+from typing import Any, Awaitable, Callable, Final, Iterable
 
 import aiomqtt
 
 from ..device import OasisDevice
+from ..exceptions import UnauthenticatedError
 from ..utils import _bit_to_bool, _parse_int
 from .transport import OasisClientProtocol
 
@@ -21,8 +21,6 @@ _LOGGER = logging.getLogger(__name__)
 HOST: Final = "mqtt.grounded.so"
 PORT: Final = 8084
 PATH: Final = "mqtt"
-USERNAME: Final = "YXBw"
-PASSWORD: Final = "RWdETFlKMDczfi4t"
 RECONNECT_INTERVAL: Final = 4
 
 # Command queue behaviour
@@ -36,7 +34,7 @@ class OasisMqttClient(OasisClientProtocol):
     - Maintain a single MQTT connection to:
         wss://mqtt.grounded.so:8084/mqtt
     - Subscribe only to <serial>/STATUS/# for devices it knows about.
-    - Publish commands to <serial>/COMMAND/CMD
+    - Publish commands to <serial>/COMMAND/CTL
     - Map MQTT payloads to OasisDevice.update_from_status_dict()
     """
 
@@ -218,12 +216,16 @@ class OasisMqttClient(OasisClientProtocol):
             if not device.is_sleeping:
                 await self.async_get_all(device)
 
-    def start(self) -> None:
+    def start(
+        self, username: str, get_token_method: Callable[[], Awaitable[str]]
+    ) -> None:
         """Start MQTT connection loop."""
         if self._loop_task is None or self._loop_task.done():
             self._stop_event.clear()
             loop = asyncio.get_running_loop()
-            self._loop_task = loop.create_task(self._mqtt_loop())
+            self._loop_task = loop.create_task(
+                self._mqtt_loop(username, get_token_method)
+            )
 
     async def async_close(self) -> None:
         """Close connection loop and MQTT client."""
@@ -610,9 +612,9 @@ class OasisMqttClient(OasisClientProtocol):
 
     async def _flush_pending_commands(self) -> None:
         """
-        Flush queued commands by publishing them to each device's COMMAND/CMD topic.
+        Flush queued commands by publishing them to each device's COMMAND/CTL topic.
 
-        This consumes all entries from the internal command queue, skipping entries for devices that are no longer registered, publishing each payload to "<serial>/COMMAND/CMD" with QoS 1, and marking queue tasks done. If a publish fails, the failed command is re-queued and flushing stops so remaining queued commands will be retried on the next reconnect.
+        This consumes all entries from the internal command queue, skipping entries for devices that are no longer registered, publishing each payload to "<serial>/COMMAND/CTL" with QoS 1, and marking queue tasks done. If a publish fails, the failed command is re-queued and flushing stops so remaining queued commands will be retried on the next reconnect.
         """
         if not self._client:
             return
@@ -636,7 +638,7 @@ class OasisMqttClient(OasisClientProtocol):
                     )
                     continue
 
-                topic = f"{serial}/COMMAND/CMD"
+                topic = f"{serial}/COMMAND/CTL"
                 _LOGGER.debug("Flushing queued MQTT command %s => %s", topic, payload)
                 await self._client.publish(topic, payload.encode(), qos=1)
             except Exception:  # noqa: BLE001
@@ -645,6 +647,7 @@ class OasisMqttClient(OasisClientProtocol):
                 )
                 # Put it back; we'll try again on next reconnect
                 await self._enqueue_command(serial, payload)
+                break
             finally:
                 # Ensure we always balance the get(), even on cancellation
                 self._command_queue.task_done()
@@ -680,7 +683,7 @@ class OasisMqttClient(OasisClientProtocol):
             await self._enqueue_command(serial, payload)
             return
 
-        topic = f"{serial}/COMMAND/CMD"
+        topic = f"{serial}/COMMAND/CTL"
         try:
             _LOGGER.debug("MQTT publish %s => %s", topic, payload)
             await self._client.publish(topic, payload.encode(), qos=1)
@@ -690,7 +693,9 @@ class OasisMqttClient(OasisClientProtocol):
             )
             await self._enqueue_command(serial, payload)
 
-    async def _mqtt_loop(self) -> None:
+    async def _mqtt_loop(
+        self, username: str, get_token_method: Callable[[], Awaitable[str]]
+    ) -> None:
         """
         Run the MQTT WebSocket connection loop that maintains connection, subscriptions,
         and message handling.
@@ -714,8 +719,8 @@ class OasisMqttClient(OasisClientProtocol):
                     port=PORT,
                     transport="websockets",
                     tls_context=tls_context,
-                    username=base64.b64decode(USERNAME).decode(),
-                    password=base64.b64decode(PASSWORD).decode(),
+                    username=username,
+                    password=await get_token_method(),
                     keepalive=30,
                     websocket_path=f"/{PATH}",
                 ) as client:
@@ -737,8 +742,11 @@ class OasisMqttClient(OasisClientProtocol):
 
             except asyncio.CancelledError:
                 break
-            except Exception:  # noqa: BLE001
-                _LOGGER.info("MQTT connection error")
+            except UnauthenticatedError as err:
+                _LOGGER.warning("MQTT authentication failed: %s", err)
+                break
+            except Exception as ex:  # noqa: BLE001
+                _LOGGER.warning("MQTT connection error: %s", ex)
 
             finally:
                 if self._connected_event.is_set():

@@ -23,6 +23,7 @@ COLOR_MEDIUM_SHADE = ("#E5E2DE", "#86888F")
 COLOR_MEDIUM_TINT = ("#B8B8B8", "#FFFFFF")
 
 IMAGE_URL = "https://app.grounded.so/uploads/{image}"
+IMAGE_PROGRESS_URL = "https://app.grounded.so/uploads/{path_draw}/{progress}.webp"
 
 
 def _bit_to_bool(val: str) -> bool:
@@ -202,10 +203,16 @@ def decrypt_svg_content(svg_content: dict[str, str]):
     return decrypted
 
 
-def get_image_url_from_track(track: dict[str, Any] | None) -> str | None:
+def get_image_url_from_track(
+    track: dict[str, Any] | None, progress: int | None = None
+) -> str | None:
     """Get the image URL from a track."""
     if not isinstance(track, dict):
         return None
+    if progress is not None and (path_draw := track.get("path_draw")):
+        return IMAGE_PROGRESS_URL.format(
+            path_draw=path_draw, progress=math.floor(progress / 50)
+        )
     return IMAGE_URL.format(image=image) if (image := track.get("image")) else None
 
 
