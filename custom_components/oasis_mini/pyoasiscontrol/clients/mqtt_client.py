@@ -11,6 +11,7 @@ from typing import Any, Awaitable, Callable, Final, Iterable
 import aiomqtt
 
 from ..device import OasisDevice
+from ..exceptions import UnauthenticatedError
 from ..utils import _bit_to_bool, _parse_int
 from .transport import OasisClientProtocol
 
@@ -741,8 +742,11 @@ class OasisMqttClient(OasisClientProtocol):
 
             except asyncio.CancelledError:
                 break
-            except Exception:  # noqa: BLE001
-                _LOGGER.info("MQTT connection error")
+            except UnauthenticatedError as err:
+                _LOGGER.warning(err)
+                break
+            except Exception as ex:  # noqa: BLE001
+                _LOGGER.warning("MQTT connection error: %s", ex)
 
             finally:
                 if self._connected_event.is_set():
