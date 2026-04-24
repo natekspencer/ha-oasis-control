@@ -743,7 +743,7 @@ class OasisMqttClient(OasisClientProtocol):
             except asyncio.CancelledError:
                 break
             except UnauthenticatedError as err:
-                _LOGGER.warning(err)
+                _LOGGER.warning("MQTT authentication failed: %s", err)
                 break
             except Exception as ex:  # noqa: BLE001
                 _LOGGER.warning("MQTT connection error: %s", ex)
