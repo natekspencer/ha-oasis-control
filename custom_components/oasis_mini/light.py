@@ -150,9 +150,7 @@ class OasisDeviceLightEntity(OasisDeviceEntity, LightEntity):
 
         led_effect = None
         if effect := kwargs.get(ATTR_EFFECT):
-            led_effect = next(
-                (k for k, v in LED_EFFECTS.items() if v == effect), None
-            )
+            led_effect = next((k for k, v in LED_EFFECTS.items() if v == effect), None)
 
         await self.device.async_set_led(
             brightness=brightness, color=color, led_effect=led_effect
