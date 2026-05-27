@@ -16,6 +16,7 @@ from ..utils import now
 _LOGGER = logging.getLogger(__name__)
 
 BASE_URL = "https://app.grounded.so"
+API_PATH = "api/v2"
 PLAYLISTS_REFRESH_LIMITER = timedelta(minutes=5)
 SOFTWARE_REFRESH_LIMITER = timedelta(hours=1)
 
@@ -129,7 +130,7 @@ class OasisCloudClient:
         """
         response = await self._async_request(
             "POST",
-            urljoin(BASE_URL, "api/auth/login"),
+            urljoin(BASE_URL, f"{API_PATH}/auth/login"),
             json={"email": email, "password": password},
         )
         token = response.get("access_token") if isinstance(response, dict) else None
@@ -142,7 +143,7 @@ class OasisCloudClient:
 
         Performs a logout request and clears the stored access token on success.
         """
-        await self._async_auth_request("GET", "api/auth/logout")
+        await self._async_auth_request("GET", f"{API_PATH}/auth/logout")
         self.access_token = None
 
     async def async_get_user(self) -> dict:
@@ -155,7 +156,7 @@ class OasisCloudClient:
         Raises:
             UnauthenticatedError: If no access token is available or the request is unauthorized.
         """
-        return await self._async_auth_request("GET", "api/auth/user")
+        return await self._async_auth_request("GET", f"{API_PATH}/auth/user")
 
     async def async_get_devices(self) -> list[dict[str, Any]]:
         """
@@ -164,7 +165,7 @@ class OasisCloudClient:
         Returns:
             list[dict[str, Any]]: A list of device objects as returned by the API.
         """
-        return await self._async_auth_request("GET", "api/user/devices")
+        return await self._async_auth_request("GET", f"{API_PATH}/user/devices")
 
     async def async_get_playlists(
         self, personal_only: bool = False
@@ -204,7 +205,7 @@ class OasisCloudClient:
 
             params = {"my_playlists": str(personal_only).lower()}
             playlists = await self._async_auth_request(
-                "GET", "api/playlist", params=params
+                "GET", f"{API_PATH}/playlist", params=params
             )
 
             if not isinstance(playlists, list):
@@ -225,7 +226,7 @@ class OasisCloudClient:
             dict: Track detail dictionary. If the track is not found (HTTP 404), returns a dict with keys `id` and `name` where `name` is "Unknown Title (#{id})". Returns `None` on other failures.
         """
         try:
-            return await self._async_auth_request("GET", f"api/track/{track_id}")
+            return await self._async_auth_request("GET", f"{API_PATH}/track/{track_id}")
         except ClientResponseError as err:
             if err.status == 404:
                 return {"id": track_id, "name": f"Unknown Title (#{track_id})"}
@@ -250,7 +251,7 @@ class OasisCloudClient:
         """
         response = await self._async_auth_request(
             "GET",
-            "api/track",
+            f"{API_PATH}/track",
             params={"ids[]": tracks or []},
         )
         if not response:
@@ -297,7 +298,9 @@ class OasisCloudClient:
             if _is_cache_valid():
                 return self._software_details
 
-            details = await self._async_auth_request("GET", "api/software/last-version")
+            details = await self._async_auth_request(
+                "GET", f"{API_PATH}/software/last-version"
+            )
 
             if not isinstance(details, dict):
                 details = {}
@@ -309,7 +312,7 @@ class OasisCloudClient:
 
     async def async_get_mqtt_token(self) -> str:
         """Get a token to interface with the MQTT server."""
-        response = await self._async_auth_request("POST", "api/v2/auth/mqtt/login")
+        response = await self._async_auth_request("POST", f"{API_PATH}/auth/mqtt/login")
         token = response.get("token") if isinstance(response, dict) else None
         if not isinstance(token, str) or not token:
             raise UnauthenticatedError("MQTT login did not return a valid token")
