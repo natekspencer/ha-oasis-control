@@ -203,13 +203,17 @@ class OasisCloudClient:
             if _is_cache_valid():
                 return self._playlists_cache[personal_only]
 
-            params = {"my_playlists": str(personal_only).lower()}
-            playlists = await self._async_auth_request(
-                "GET", f"{API_PATH}/playlist", params=params
+            response = await self._async_auth_request(
+                "GET",
+                f"{API_PATH}/playlist",
+                params={"my_playlists": str(personal_only).lower()},
             )
-
-            if not isinstance(playlists, list):
-                playlists = []
+            if not response:
+                return []
+            playlists = response.get("data", [])
+            while next_page_url := response.get("next_page_url"):
+                response = await self._async_auth_request("GET", next_page_url)
+                playlists += response.get("data", [])
 
             self._playlists_cache[personal_only] = playlists
             self._playlists_next_refresh[personal_only] = (
