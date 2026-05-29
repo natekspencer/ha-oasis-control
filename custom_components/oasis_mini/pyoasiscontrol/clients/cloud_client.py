@@ -203,17 +203,11 @@ class OasisCloudClient:
             if _is_cache_valid():
                 return self._playlists_cache[personal_only]
 
-            response = await self._async_auth_request(
+            playlists = await self._async_get_paginated(
                 "GET",
                 f"{API_PATH}/playlist",
                 params={"my_playlists": str(personal_only).lower()},
             )
-            if not response:
-                return []
-            playlists = response.get("data", [])
-            while next_page_url := response.get("next_page_url"):
-                response = await self._async_auth_request("GET", next_page_url)
-                playlists += response.get("data", [])
 
             self._playlists_cache[personal_only] = playlists
             self._playlists_next_refresh[personal_only] = (
@@ -253,18 +247,11 @@ class OasisCloudClient:
         Returns:
             list[dict[str, Any]]: A list of track detail dictionaries returned by the cloud, aggregated across all pages (may be empty).
         """
-        response = await self._async_auth_request(
+        return await self._async_get_paginated(
             "GET",
             f"{API_PATH}/track",
             params={"ids[]": tracks or []},
         )
-        if not response:
-            return []
-        track_details = response.get("data", [])
-        while next_page_url := response.get("next_page_url"):
-            response = await self._async_auth_request("GET", next_page_url)
-            track_details += response.get("data", [])
-        return track_details
 
     async def async_get_latest_software_details(
         self, *, force_refresh: bool = False
@@ -322,6 +309,21 @@ class OasisCloudClient:
             raise UnauthenticatedError("MQTT login did not return a valid token")
         _LOGGER.debug("MQTT login succeeded")
         return token
+
+    async def _async_get_paginated(
+        self, method: str, url: str, **kwargs: Any
+    ) -> list[dict[str, Any]]:
+        """Fetch all pages of a paginated cloud response, following next_page_url."""
+        response = await self._async_auth_request(method, url, **kwargs)
+        if not response:
+            return []
+        items = response.get("data", [])
+        while next_page_url := response.get("next_page_url"):
+            response = await self._async_auth_request("GET", next_page_url)
+            if not response:
+                break
+            items += response.get("data", [])
+        return items
 
     async def _async_auth_request(self, method: str, url: str, **kwargs: Any) -> Any:
         """
