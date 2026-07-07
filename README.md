@@ -88,6 +88,6 @@ I maintain this Home Assistant integration in my spare time. If you find it usef
 
 ## 📈 Star History
 
-[![Star History Chart](https://api.star-history.com/svg?repos=natekspencer/ha-oasis-control)](https://www.star-history.com/#natekspencer/ha-oasis-control)
+[![Star History Chart](https://api.star-history.com/chart?repos=natekspencer/ha-oasis-control&type=date&legend=top-left&sealed_token=n9TbiL627kWZF3nZ9mlqtnBMAEJG1cY4JTLrbad6LVY3S7UoBAgjPPro4yMx5DfBlVx6elYEiYr7u2IV17EjJiwp2_STvx3ULL5Tf59qNJHtamOyqZaF6jGTtLHhLHqhTMDKF1Ubq86nb2IaZrTiiK5qVNdMwtfYbJbQMPJUFVVVNwogZ3Ch2CqFtFXI)](https://www.star-history.com/?repos=natekspencer%2Fha-oasis-control)
 
 <!-- END AUTO-GENERATED FOOTER -->
