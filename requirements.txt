@@ -1,5 +1,5 @@
 # Home Assistant
-homeassistant>=2026.7.1
+homeassistant>=2026.7.2
 numpy
 PyTurboJPEG
 
