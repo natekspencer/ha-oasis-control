@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 import logging
-from typing import Any, Mapping
+from typing import Any
 
 from aiohttp import ClientConnectorError
 from httpx import ConnectError, HTTPStatusError
