@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable, Iterable
 from datetime import datetime
 import logging
-from typing import TYPE_CHECKING, Any, Callable, Final, Iterable
+from typing import TYPE_CHECKING, Any, Final
 
 from .const import (
     ERROR_CODE_MAP,
