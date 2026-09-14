@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 import logging
-from typing import Any, Callable, Iterable
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_EMAIL, Platform
@@ -260,7 +261,7 @@ async def async_migrate_entry(
 
 
 async def async_remove_config_entry_device(
-    hass: HomeAssistant,  # noqa: ARG001
+    hass: HomeAssistant,
     config_entry: OasisDeviceConfigEntry,
     device_entry: DeviceEntry,
 ) -> bool:
