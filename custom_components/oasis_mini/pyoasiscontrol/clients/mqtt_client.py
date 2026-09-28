@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, datetime
 import logging
 import ssl
-from typing import Any, Awaitable, Callable, Final, Iterable
+from typing import Any, Final
 
 import aiomqtt
 
