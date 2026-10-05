@@ -30,7 +30,7 @@ from .pyoasiscontrol.const import LED_EFFECTS
 
 
 async def async_setup_entry(
-    hass: HomeAssistant,  # noqa: ARG001
+    hass: HomeAssistant,
     entry: OasisDeviceConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:

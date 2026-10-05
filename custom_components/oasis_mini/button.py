@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 import random
-from typing import Awaitable, Callable
 
 from homeassistant.components.button import (
     ButtonDeviceClass,
@@ -24,7 +24,7 @@ from .pyoasiscontrol.const import TRACKS
 
 
 async def async_setup_entry(
-    hass: HomeAssistant,  # noqa: ARG001
+    hass: HomeAssistant,
     entry: OasisDeviceConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
