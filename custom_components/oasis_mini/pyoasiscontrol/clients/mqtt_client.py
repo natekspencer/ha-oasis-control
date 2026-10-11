@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable, Iterable
 from datetime import UTC, datetime
 import logging
 import ssl
-from typing import Any, Awaitable, Callable, Final, Iterable
+from typing import Any, Final
 
 import aiomqtt
 
@@ -309,7 +310,7 @@ class OasisMqttClient(OasisClientProtocol):
         # Wait for MQTT connection
         try:
             await asyncio.wait_for(self._connected_event.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             _LOGGER.debug(
                 "Timeout (%.1fs) waiting for MQTT connection (device %s)",
                 timeout,
@@ -330,7 +331,7 @@ class OasisMqttClient(OasisClientProtocol):
         # Wait for initialization
         try:
             await asyncio.wait_for(is_initialized_event.wait(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             _LOGGER.debug(
                 "Timeout (%.1fs) waiting for initialization from %s",
                 timeout,
@@ -371,7 +372,7 @@ class OasisMqttClient(OasisClientProtocol):
 
         try:
             await asyncio.wait_for(mac_event.wait(), timeout=3.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             _LOGGER.debug("Timed out waiting for MAC_ADDRESS for %s", serial)
 
         return device.mac_address
