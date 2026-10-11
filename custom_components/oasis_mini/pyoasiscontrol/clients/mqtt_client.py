@@ -64,6 +64,7 @@ class OasisMqttClient(OasisClientProtocol):
         self._connected_at: datetime | None = None
 
         self._connected_event: asyncio.Event = asyncio.Event()
+        self._connection_listeners: list[Callable[[], None]] = []
         self._stop_event: asyncio.Event = asyncio.Event()
 
         # Known devices by serial
@@ -95,6 +96,31 @@ class OasisMqttClient(OasisClientProtocol):
     def is_connected(self) -> bool:
         """Return `True` if the MQTT client is currently connected."""
         return self._connected_event.is_set()
+
+    def add_connection_listener(
+        self, listener: Callable[[], None]
+    ) -> Callable[[], None]:
+        """
+        Register a callback invoked whenever the broker connection is established or lost.
+
+        Returns:
+            Callable[[], None]: An unsubscribe function; calling it multiple times is safe.
+        """
+        self._connection_listeners.append(listener)
+
+        def _unsub() -> None:
+            if listener in self._connection_listeners:
+                self._connection_listeners.remove(listener)
+
+        return _unsub
+
+    def _notify_connection_listeners(self) -> None:
+        """Invoke all connection listeners, logging (not raising) their errors."""
+        for listener in list(self._connection_listeners):
+            try:
+                listener()
+            except Exception:
+                _LOGGER.exception("Error in MQTT connection listener")
 
     def register_device(self, device: OasisDevice) -> None:
         """
@@ -224,7 +250,8 @@ class OasisMqttClient(OasisClientProtocol):
         self._subscribed_serials.clear()
         for serial, device in self._devices.items():
             await self._subscribe_serial(serial)
-            if not device.is_sleeping:
+            # Devices attached to another transport (e.g. BLE) refresh themselves
+            if device.client is self and not device.is_sleeping:
                 await self.async_get_all(device)
 
     def start(
@@ -740,6 +767,7 @@ class OasisMqttClient(OasisClientProtocol):
                     self._connected_event.set()
                     self._connected_at = datetime.now(UTC)
                     _LOGGER.info("Connected to MQTT broker")
+                    self._notify_connection_listeners()
 
                     # Subscribe only to STATUS topics for known devices
                     await self._resubscribe_all()
@@ -779,6 +807,7 @@ class OasisMqttClient(OasisClientProtocol):
                             datetime.now(UTC) - self._connected_at,
                         )
                     self._connected_at = None
+                    self._notify_connection_listeners()
                 self._client = None
                 self._subscribed_serials.clear()
 
@@ -900,7 +929,7 @@ class OasisMqttClient(OasisClientProtocol):
             return
 
         if data:
-            device.update_from_status_dict(data)
+            device.update_from_status_dict(data, source=self)
 
         is_initialized_event = self._initialized_events.setdefault(
             serial, asyncio.Event()

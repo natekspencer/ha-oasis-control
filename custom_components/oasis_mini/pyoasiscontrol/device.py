@@ -185,7 +185,10 @@ class OasisDevice:
 
     def attach_client(self, client: OasisClientProtocol) -> None:
         """Attach a transport client (MQTT, HTTP, etc.) to this device."""
+        if client is self._client:
+            return
         self._client = client
+        self._notify_listeners()
 
     @property
     def client(self) -> OasisClientProtocol | None:
@@ -239,7 +242,9 @@ class OasisDevice:
             return True
         return False
 
-    def update_from_status_dict(self, data: dict[str, Any]) -> None:
+    def update_from_status_dict(
+        self, data: dict[str, Any], source: OasisClientProtocol | None = None
+    ) -> None:
         """
         Update the device's attributes from a status dictionary.
 
@@ -248,7 +253,18 @@ class OasisDevice:
         refresh is scheduled. If the current track changes without an accompanying `progress`
         value, progress is reset to 0 so the previous track's progress isn't applied to the new
         track. If any attribute changed, registered update listeners are notified.
+
+        When `source` is a transport other than the attached client, fields the attached
+        client reports itself (its `status_fields`) are ignored, so a slower transport
+        (e.g. cloud MQTT) can't overwrite fresher values from the active one (e.g. BLE).
         """
+        if (
+            source is not None
+            and source is not self._client
+            and (owned := getattr(self._client, "status_fields", None))
+        ):
+            data = {k: v for k, v in data.items() if k not in owned}
+
         changed = False
         playlist_or_index_changed = False
         previous_track_id = self.track_id

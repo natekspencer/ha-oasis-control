@@ -1,6 +1,9 @@
 {
   "domain": "oasis_mini",
   "name": "Oasis Control",
+  "after_dependencies": [
+    "bluetooth"
+  ],
   "codeowners": [
     "@natekspencer"
   ],
@@ -18,7 +21,8 @@
     "custom_components.oasis_mini"
   ],
   "requirements": [
-    "aiomqtt"
+    "aiomqtt",
+    "bleak-retry-connector"
   ],
   "version": "0.0.0"
 }

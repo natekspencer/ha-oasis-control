@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta
+from functools import partial
 import logging
 from typing import TYPE_CHECKING
 
+from bleak.exc import BleakError
+
 from homeassistant.const import CONF_EMAIL
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_send
@@ -22,11 +26,36 @@ from .pyoasiscontrol import (
     OasisMqttClient,
     UnauthenticatedError,
 )
+from .pyoasiscontrol.clients.ble_client import OASIS_SERVICE_UUID, OasisBleClient
 
 if TYPE_CHECKING:
+    from homeassistant.components.bluetooth import (
+        BluetoothChange,
+        BluetoothServiceInfoBleak,
+    )
+
     from . import OasisDeviceConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
+
+# BLE connection retry backoff: starts at BLE_RECONNECT_DELAY seconds and doubles
+# up to BLE_RETRY_INTERVAL while Home Assistant can still see the device
+BLE_RETRY_INTERVAL = 60
+BLE_RECONNECT_DELAY = 5
+
+
+async def fake_devices(self):
+    return [
+        {"serial_number": "OM241704853", "name": None, "model": {"name": "Oasis Mini"}},
+        {"serial_number": "OM242701898", "name": None, "model": {"name": "Oasis Mini"}},
+        {"serial_number": "OM242700010", "name": None, "model": {"name": "Oasis Mini"}},
+    ]
+
+
+# # Override the method
+# OasisCloudClient.async_get_devices = fake_devices.__get__(
+#     OasisCloudClient, type(OasisCloudClient)
+# )
 
 
 class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
@@ -53,11 +82,20 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
             _LOGGER,
             config_entry=config_entry,
             name=DOMAIN,
-            update_interval=timedelta(minutes=10),
+            update_interval=timedelta(minutes=2),
             always_update=False,
         )
         self.cloud_client = cloud_client
         self.mqtt_client = OasisMqttClient()
+        config_entry.async_on_unload(
+            self.mqtt_client.add_connection_listener(self.async_update_listeners)
+        )
+
+        # Bluetooth clients by address, plus probe bookkeeping
+        self.ble_clients: dict[str, OasisBleClient] = {}
+        self._ble_probing: set[str] = set()
+        self._ble_ignored: set[str] = set()
+        self._ble_reconnect_tasks: dict[str, asyncio.Task[None]] = {}
 
         # Track which devices are currently considered initialized
         self._initialized_serials: set[str] = set()
@@ -222,10 +260,220 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
 
         return devices
 
+    @callback
+    def async_setup_bluetooth(self) -> None:
+        """Start watching for Oasis devices advertising over Bluetooth."""
+        if "bluetooth" not in self.hass.config.components:
+            _LOGGER.debug("Bluetooth integration not loaded; using MQTT only")
+            return
+
+        # Imported lazily so the integration still loads without bluetooth support
+        from homeassistant.components import bluetooth
+
+        self.config_entry.async_on_unload(
+            bluetooth.async_register_callback(
+                self.hass,
+                self._async_ble_discovered,
+                bluetooth.BluetoothCallbackMatcher(
+                    service_uuid=OASIS_SERVICE_UUID, connectable=True
+                ),
+                bluetooth.BluetoothScanningMode.ACTIVE,
+            )
+        )
+        for service_info in bluetooth.async_discovered_service_info(
+            self.hass, connectable=True
+        ):
+            if OASIS_SERVICE_UUID in service_info.service_uuids:
+                self._async_ble_discovered(
+                    service_info, bluetooth.BluetoothChange.ADVERTISEMENT
+                )
+
+    @callback
+    def _async_ble_discovered(
+        self,
+        service_info: BluetoothServiceInfoBleak,
+        change: BluetoothChange,
+    ) -> None:
+        """Probe a newly seen Oasis BLE advertiser to learn which device it is."""
+        address = service_info.address
+        if (
+            address in self.ble_clients
+            or address in self._ble_probing
+            or address in self._ble_ignored
+        ):
+            return
+
+        self._ble_probing.add(address)
+        self.config_entry.async_create_background_task(
+            self.hass, self._async_probe_ble(address), f"{DOMAIN} BLE probe {address}"
+        )
+
+    async def _async_probe_ble(self, address: str) -> None:
+        """Connect to a BLE advertiser, identify it and attach it to its device."""
+        from homeassistant.components import bluetooth
+
+        client = OasisBleClient(
+            address,
+            partial(bluetooth.async_ble_device_from_address, self.hass, address, True),
+            on_disconnect=partial(self._async_ble_disconnected, address),
+        )
+
+        async def _async_identify() -> None:
+            if not await client.async_get_serial_number():
+                raise BleakError("No response to GETID")
+
+        try:
+            if not await self._async_ble_retry(address, _async_identify):
+                await client.async_close()
+                return
+        finally:
+            self._ble_probing.discard(address)
+        serial = client.serial_number
+
+        device = next(
+            (d for d in self.data or [] if serial and d.serial_number == serial), None
+        )
+        if device is None:
+            _LOGGER.debug(
+                "Oasis BLE device %s (%s) is not on this account; ignoring",
+                address,
+                serial,
+            )
+            self._ble_ignored.add(address)
+            await client.async_close()
+            return
+
+        _LOGGER.info("Using Bluetooth for Oasis device %s (%s)", serial, address)
+        self.ble_clients[address] = client
+        device_registry = dr.async_get(self.hass)
+        if device_entry := device_registry.async_get_device(
+            identifiers={(DOMAIN, serial)}
+        ):
+            device_registry.async_update_device(
+                device_entry.id,
+                merge_connections={(dr.CONNECTION_BLUETOOTH, dr.format_mac(address))},
+            )
+        client.attach_device(device)
+        device.attach_client(client)
+        try:
+            await client.async_get_all(device)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Error fetching status over BLE from %s: %s", address, err)
+
+    @callback
+    def _async_ble_disconnected(self, address: str) -> None:
+        """Fall back to MQTT when a BLE connection drops and start reconnecting.
+
+        Reconnection can't wait for the next advertisement: Home Assistant only
+        dispatches advertisements whose content changed, and the device re-advertises
+        the same data after a disconnect.
+        """
+        if not (client := self.ble_clients.get(address)):
+            return
+        device = next(
+            (
+                d
+                for d in self.data or []
+                if client.serial_number and d.serial_number == client.serial_number
+            ),
+            None,
+        )
+        if device is None:
+            self.ble_clients.pop(address)
+            return
+
+        if device.client is client:
+            _LOGGER.info(
+                "Bluetooth lost for Oasis device %s; falling back to MQTT",
+                device.serial_number,
+            )
+            device.attach_client(self.mqtt_client)
+
+        if address not in self._ble_reconnect_tasks:
+            self._ble_reconnect_tasks[address] = (
+                self.config_entry.async_create_background_task(
+                    self.hass,
+                    self._async_ble_reconnect(address, client, device),
+                    f"{DOMAIN} BLE reconnect {address}",
+                )
+            )
+
+    async def _async_ble_reconnect(
+        self, address: str, client: OasisBleClient, device: OasisDevice
+    ) -> None:
+        """Reconnect a dropped BLE client with backoff, then switch back to it."""
+        try:
+            if not await self._async_ble_retry(
+                address, client.async_connect, BLE_RECONNECT_DELAY
+            ):
+                self.ble_clients.pop(address, None)
+                await client.async_close()
+                return
+        finally:
+            self._ble_reconnect_tasks.pop(address, None)
+
+        _LOGGER.info(
+            "Bluetooth restored for Oasis device %s (%s)", device.serial_number, address
+        )
+        device.attach_client(client)
+        try:
+            await client.async_get_all(device)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Error fetching status over BLE from %s: %s", address, err)
+
+    async def _async_ble_retry(
+        self,
+        address: str,
+        attempt: Callable[[], Awaitable[object]],
+        delay: float = 0,
+    ) -> bool:
+        """Run a BLE connection attempt, retrying with backoff while the device is in range.
+
+        Gives up once no Bluetooth scanner has a connectable path to the device.
+        Home Assistant drops it from its advertisement history at that point, so
+        its next advertisement reaches _async_ble_discovered and probes it again
+        (identical advertisements are otherwise never re-dispatched).
+
+        Returns:
+            bool: True if the attempt succeeded, False if the device is out of range.
+        """
+        from homeassistant.components import bluetooth
+
+        while True:
+            if delay:
+                await asyncio.sleep(delay)
+            if not bluetooth.async_address_present(
+                self.hass, address, connectable=True
+            ):
+                _LOGGER.debug(
+                    "Oasis BLE device %s no longer seen by any Bluetooth adapter; "
+                    "waiting for it to advertise again",
+                    address,
+                )
+                return False
+            try:
+                await attempt()
+            except Exception as err:  # noqa: BLE001
+                delay = min(max(delay * 2, BLE_RECONNECT_DELAY), BLE_RETRY_INTERVAL)
+                _LOGGER.debug(
+                    "Unable to connect to Oasis BLE device %s: %s; retrying in %ss",
+                    address,
+                    err,
+                    delay,
+                )
+            else:
+                return True
+
     async def async_close(self) -> None:
         """Close client connections."""
+        for task in self._ble_reconnect_tasks.values():
+            task.cancel()
+        self._ble_reconnect_tasks.clear()
+        ble_clients = list(self.ble_clients.values())
+        self.ble_clients.clear()
         await asyncio.gather(
             self.mqtt_client.async_close(),
             self.cloud_client.async_close(),
+            *(client.async_close() for client in ble_clients),
             return_exceptions=True,
         )

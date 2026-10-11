@@ -142,6 +142,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: OasisDeviceConfigEntry) 
         _LOGGER.warning("No devices associated with account")
 
     entry.runtime_data = coordinator
+    coordinator.async_setup_bluetooth()
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

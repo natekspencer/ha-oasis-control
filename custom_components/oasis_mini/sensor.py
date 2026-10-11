@@ -16,7 +16,8 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import OasisDeviceConfigEntry, setup_platform_from_coordinator
 from .entity import OasisDeviceEntity
-from .pyoasiscontrol import OasisDevice
+from .pyoasiscontrol import OasisDevice, OasisMqttClient
+from .pyoasiscontrol.clients.ble_client import OasisBleClient
 
 
 async def async_setup_entry(
@@ -43,13 +44,20 @@ async def async_setup_entry(
             new_devices (list[OasisDevice]): Devices to create sensor entities for.
 
         Returns:
-            list[OasisDeviceSensorEntity]: A list containing one sensor entity per combination of device and descriptor from DESCRIPTORS.
+            list[SensorEntity]: One sensor entity per device and descriptor in DESCRIPTORS, plus a connection sensor per device.
         """
-        return [
+        entities: list[SensorEntity] = [
             OasisDeviceSensorEntity(entry.runtime_data, device, descriptor)
             for device in new_devices
             for descriptor in DESCRIPTORS
         ]
+        entities.extend(
+            OasisDeviceConnectionSensorEntity(
+                entry.runtime_data, device, CONNECTION_DESCRIPTOR
+            )
+            for device in new_devices
+        )
+        return entities
 
     setup_platform_from_coordinator(entry, async_add_entities, make_entities)
 
@@ -90,6 +98,15 @@ DESCRIPTORS.extend(
 )
 
 
+CONNECTION_DESCRIPTOR = SensorEntityDescription(
+    key="connection",
+    translation_key="connection",
+    device_class=SensorDeviceClass.ENUM,
+    entity_category=EntityCategory.DIAGNOSTIC,
+    options=["bluetooth", "cloud", "disconnected"],
+)
+
+
 class OasisDeviceSensorEntity(OasisDeviceEntity, SensorEntity):
     """Oasis device sensor entity."""
 
@@ -97,3 +114,17 @@ class OasisDeviceSensorEntity(OasisDeviceEntity, SensorEntity):
     def native_value(self) -> str | int | float | datetime | None:
         """Provide the current sensor value from the underlying device."""
         return getattr(self.device, self.entity_description.key)
+
+
+class OasisDeviceConnectionSensorEntity(OasisDeviceEntity, SensorEntity):
+    """Oasis device connection sensor entity."""
+
+    @property
+    def native_value(self) -> str:
+        """Return how Home Assistant is currently reaching the device."""
+        client = self.device.client
+        if isinstance(client, OasisBleClient) and client.is_connected:
+            return "bluetooth"
+        if isinstance(client, OasisMqttClient) and client.is_connected:
+            return "cloud"
+        return "disconnected"
