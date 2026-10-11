@@ -28,6 +28,14 @@ def get_author_name(data: dict) -> str:
     return author.get("name") or author.get("nickname") or "Kinetic Oasis"
 
 
+def write_tracks(tracks: dict[int, dict[str, Any]]) -> None:
+    """Write the track list to `pyoasiscontrol/tracks.json`."""
+    with open(
+        "custom_components/oasis_mini/pyoasiscontrol/tracks.json", "w", encoding="utf8"
+    ) as file:
+        json.dump(tracks, file, indent=2, ensure_ascii=False)
+
+
 async def update_tracks() -> None:
     """
     Fetch tracks from the Grounded Labs cloud, detect new or changed public tracks
@@ -45,7 +53,7 @@ async def update_tracks() -> None:
     try:
         try:
             data = await client.async_get_tracks()
-        except Exception as ex:
+        except Exception as ex:  # noqa: BLE001 - report any API failure and exit
             print(type(ex).__name__, ex)
             return
 
@@ -80,14 +88,12 @@ async def update_tracks() -> None:
         print("No updated tracks")
         return
 
-    tracks = {k: v for k, v in TRACKS.items() if k in map(lambda d: d["id"], data)}
+    track_ids = {d["id"] for d in data}
+    tracks = {k: v for k, v in TRACKS.items() if k in track_ids}
     tracks.update(updated_tracks)
     tracks = dict(sorted(tracks.items(), key=lambda t: t[1]["name"].lower()))
 
-    with open(
-        "custom_components/oasis_mini/pyoasiscontrol/tracks.json", "w", encoding="utf8"
-    ) as file:
-        json.dump(tracks, file, indent=2, ensure_ascii=False)
+    await asyncio.to_thread(write_tracks, tracks)
 
 
 if __name__ == "__main__":

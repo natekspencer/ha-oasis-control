@@ -1,4 +1,4 @@
-[tool.ruff.flake8-unused-arguments]
+[tool.ruff.lint.flake8-unused-arguments]
 ignore-variadic-names = true
 
 [tool.ruff.lint.isort]
