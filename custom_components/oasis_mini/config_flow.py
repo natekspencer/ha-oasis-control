@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Mapping
 import logging
-from typing import Any, Mapping
+from typing import Any
 
 from aiohttp import ClientConnectorError
 from httpx import ConnectError, HTTPStatusError
@@ -114,25 +115,26 @@ class OasisDeviceConfigFlow(ConfigFlow, domain=DOMAIN):
         """
         errors = {}
 
-        if user_input is not None:
-            if not (errors := await self.validate_client(user_input)):
-                entry_id = self.context.get("entry_id")
-                existing_entry = self.hass.config_entries.async_get_entry(entry_id)
-                if existing_entry and existing_entry.unique_id:
-                    self._abort_if_unique_id_mismatch(reason="wrong_account")
-                if existing_entry:
-                    return self.async_update_reload_and_abort(
-                        existing_entry,
-                        unique_id=self.unique_id,
-                        title=user_input[CONF_EMAIL],
-                        data=user_input,
-                        reload_even_if_entry_is_unchanged=False,
-                    )
-
-                self._abort_if_unique_id_configured(updates=user_input)
-                return self.async_create_entry(
-                    title=user_input[CONF_EMAIL], data=user_input
+        if user_input is not None and not (
+            errors := await self.validate_client(user_input)
+        ):
+            entry_id = self.context.get("entry_id")
+            existing_entry = self.hass.config_entries.async_get_entry(entry_id)
+            if existing_entry and existing_entry.unique_id:
+                self._abort_if_unique_id_mismatch(reason="wrong_account")
+            if existing_entry:
+                return self.async_update_reload_and_abort(
+                    existing_entry,
+                    unique_id=self.unique_id,
+                    title=user_input[CONF_EMAIL],
+                    data=user_input,
+                    reload_even_if_entry_is_unchanged=False,
                 )
+
+            self._abort_if_unique_id_configured(updates=user_input)
+            return self.async_create_entry(
+                title=user_input[CONF_EMAIL], data=user_input
+            )
 
         return self.async_show_form(
             step_id=step_id,
@@ -171,7 +173,7 @@ class OasisDeviceConfigFlow(ConfigFlow, domain=DOMAIN):
                 errors["base"] = "invalid_auth"
         except UnauthenticatedError:
             errors["base"] = "invalid_auth"
-        except asyncio.TimeoutError:
+        except TimeoutError:
             errors["base"] = "timeout_connect"
         except ConnectError:
             errors["base"] = "invalid_auth"

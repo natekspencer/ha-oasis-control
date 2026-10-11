@@ -1,7 +1,5 @@
 # Home Assistant
 homeassistant>=2026.7.1
-numpy
-PyTurboJPEG
 
 # Integration
 aiohttp # should already be installed with Home Assistant
@@ -10,6 +8,8 @@ cryptography # should already be installed with Home Assistant
 
 # Development
 colorlog
-pip>=26.1.2
+isal
+pip>=26.2.1
 pre-commit
-ruff
+ruff>=0.17.0
+zlib-ng
