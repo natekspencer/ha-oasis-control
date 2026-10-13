@@ -185,7 +185,13 @@ class OasisMqttClient(OasisClientProtocol):
                 return
 
             topic = f"{serial}/STATUS/#"
-            await self._client.subscribe([(topic, 1)])
+            result = await self._client.subscribe([(topic, 1)])
+            if any(
+                code >= 0x80 if isinstance(code, int) else code.is_failure
+                for code in result or ()
+            ):
+                _LOGGER.warning("Broker rejected subscription to %s", topic)
+                return
             self._subscribed_serials.add(serial)
             _LOGGER.info("Subscribed to %s", topic)
 
@@ -584,7 +590,7 @@ class OasisMqttClient(OasisClientProtocol):
 
     async def async_get_all(self, device: OasisDevice) -> None:
         """Request FULLSTATUS + SCHEDULE (compact snapshot)."""
-        await self._publish_command(device, "GETALL")
+        await self._publish_command(device, "GETALL=")
 
     async def async_get_status(self, device: OasisDevice) -> None:
         """
@@ -718,6 +724,7 @@ class OasisMqttClient(OasisClientProtocol):
                 async with aiomqtt.Client(
                     hostname=HOST,
                     port=PORT,
+                    identifier=f"{username};{int(datetime.now(UTC).timestamp() * 1000)}",
                     transport="websockets",
                     tls_context=tls_context,
                     username=username,
@@ -802,7 +809,7 @@ class OasisMqttClient(OasisClientProtocol):
                 data["status_code"] = int(payload)
             elif status_name == "OASIS_ERROR":
                 data["error"] = int(payload)
-            elif status_name == "OASIS_SPEEED":
+            elif status_name in ("OASIS_SPEED", "OASIS_SPEEED"):
                 data["ball_speed"] = int(payload)
             elif status_name == "JOBLIST":
                 data["playlist"] = [
@@ -860,6 +867,8 @@ class OasisMqttClient(OasisClientProtocol):
                 data["schedule"] = payload
             elif status_name == "ENVIRONMENT":
                 data["environment"] = payload
+            elif status_name == "USERATTACHED":
+                _LOGGER.debug("%s user attached: %s", serial, payload)
             elif status_name == "FULLSTATUS":
                 if parsed := device.parse_status_string(payload):
                     data = parsed
