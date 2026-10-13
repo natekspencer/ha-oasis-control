@@ -245,10 +245,13 @@ class OasisDevice:
 
         Expects a mapping of attribute names to values; known attributes are applied to the device,
         unknown keys are logged and ignored. If `playlist` or `playlist_index` change, a track
-        refresh is scheduled. If any attribute changed, registered update listeners are notified.
+        refresh is scheduled. If the current track changes without an accompanying `progress`
+        value, progress is reset to 0 so the previous track's progress isn't applied to the new
+        track. If any attribute changed, registered update listeners are notified.
         """
         changed = False
         playlist_or_index_changed = False
+        previous_track_id = self.track_id
 
         for key, value in data.items():
             if hasattr(self, key):
@@ -260,6 +263,8 @@ class OasisDevice:
                 _LOGGER.warning("Unknown field: %s=%s", key, value)
 
         if playlist_or_index_changed:
+            if self.track_id != previous_track_id and "progress" not in data:
+                self._update_field("progress", 0)
             self.schedule_track_refresh()
 
         if changed:
