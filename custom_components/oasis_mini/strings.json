@@ -110,6 +110,14 @@
       }
     },
     "sensor": {
+      "connection": {
+        "name": "Connection",
+        "state": {
+          "bluetooth": "Bluetooth",
+          "cloud": "Cloud",
+          "disconnected": "Disconnected"
+        }
+      },
       "download_progress": {
         "name": "Download progress"
       },

@@ -9,6 +9,13 @@
       }
     },
     "sensor": {
+      "connection": {
+        "default": "mdi:lan-disconnect",
+        "state": {
+          "bluetooth": "mdi:bluetooth-connect",
+          "cloud": "mdi:cloud-check-outline"
+        }
+      },
       "download_progress": {
         "default": "mdi:progress-download"
       },
