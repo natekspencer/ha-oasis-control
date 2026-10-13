@@ -11,3 +11,8 @@ split-on-trailing-comma = false
 [tool.pylint."MESSAGES CONTROL"]
 # abstract-method - with intro of async there are always methods missing
 disable = ["abstract-method", "unexpected-keyword-arg"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
