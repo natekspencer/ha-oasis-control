@@ -1,5 +1,5 @@
 # Home Assistant
-homeassistant>=2026.10.0
+homeassistant>=2026.10.1
 
 # Integration
 aiohttp # should already be installed with Home Assistant
