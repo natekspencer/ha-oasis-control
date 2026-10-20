@@ -128,11 +128,21 @@ class OasisDeviceConfigFlow(ConfigFlow, domain=DOMAIN):
                 await client.async_close()
 
         await client.async_close()
-        status = result.get("status", "pending")
+        status = result.get("status")
         if status == "pending":
             return self._show_confirm_form({"base": "login_pending"})
 
-        error = "login_rejected" if status == "cancelled" else "login_expired"
+        if status in ("expired", "not_found"):
+            error = "login_expired"
+        elif status == "cancelled":
+            error = "login_rejected"
+        else:
+            # Log only the keys so the token/secret are never recorded
+            _LOGGER.error(
+                "Unexpected Oasis login check response (keys: %s)", sorted(result)
+            )
+            return self._show_confirm_form({"base": "unknown"})
+
         return self._show_credentials_form(
             self._credentials_step, {CONF_EMAIL: self._email}, {"base": error}
         )

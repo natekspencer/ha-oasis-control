@@ -122,6 +122,21 @@ async def test_terminal_status_returns_to_credentials(
     assert result["errors"] == {"base": error}
 
 
+@pytest.mark.parametrize("result_payload", [{"status": "weird"}, {}])
+async def test_unexpected_status_shows_unknown(
+    hass: HomeAssistant, mock_flow_client: MagicMock, result_payload: dict
+) -> None:
+    """An unknown or missing status stays on the confirm step as an unknown error."""
+    flow_id = await _start(hass)
+
+    mock_flow_client.async_check_login.return_value = result_payload
+    result = await hass.config_entries.flow.async_configure(flow_id, {})
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "confirm"
+    assert result["errors"] == {"base": "unknown"}
+
+
 async def test_invalid_credentials(
     hass: HomeAssistant, mock_flow_client: MagicMock
 ) -> None:
