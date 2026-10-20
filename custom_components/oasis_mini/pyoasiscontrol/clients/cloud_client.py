@@ -122,20 +122,65 @@ class OasisCloudClient:
         """
         self._access_token = value
 
-    async def async_login(self, email: str, password: str) -> None:
+    async def async_start_login(self, email: str, password: str) -> dict[str, Any]:
         """
-        Log in to the Oasis cloud and store the received access token on the client.
+        Begin a device-approval login and return the challenge to confirm in the app.
 
-        Performs an authentication request using the provided credentials and saves the returned access token to self.access_token for use in subsequent authenticated requests.
+        The cloud no longer accepts password logins from anything but its official
+        app. Instead, credentials start an approval request that the user confirms in
+        the Oasis Control app (by scanning the QR code or entering the shown code).
+
+        Returns:
+            dict[str, Any]: The challenge payload, including `login_id`, `code`,
+            `poll_secret`, `expires_at` and `qr_payload`.
+
+        Raises:
+            UnauthenticatedError: If the credentials are rejected or the response is
+            missing the expected challenge fields.
         """
         response = await self._async_request(
             "POST",
-            urljoin(BASE_URL, f"{API_PATH}/auth/login"),
+            urljoin(BASE_URL, f"{API_PATH}/panel/auth/login"),
             json={"email": email, "password": password},
         )
-        token = response.get("access_token") if isinstance(response, dict) else None
-        self.access_token = token
-        _LOGGER.debug("Cloud login succeeded, token set: %s", bool(token))
+        required = ("login_id", "code", "poll_secret", "qr_payload")
+        if not isinstance(response, dict) or not all(
+            response.get(field) for field in required
+        ):
+            raise UnauthenticatedError("Login did not return an approval challenge")
+        _LOGGER.debug("Started device-approval login")
+        return response
+
+    async def async_check_login(
+        self, login_id: str, poll_secret: str
+    ) -> dict[str, Any]:
+        """
+        Poll whether a device-approval login has been confirmed in the app.
+
+        Stores the access token on the client once the login is approved. The server
+        returns a JSON body on both success and the terminal states (expired,
+        not_found, cancelled), so the body is read regardless of status code.
+
+        Returns:
+            dict[str, Any]: The status payload, e.g. `{"status": "pending"}` or
+            `{"authenticated": True, "access_token": ...}`.
+        """
+        session = self.session
+        url = urljoin(BASE_URL, f"{API_PATH}/panel/auth/login/check")
+        response = await session.request(
+            "POST", url, json={"login_id": login_id, "poll_secret": poll_secret}
+        )
+        if response.content_type != "application/json":
+            response.raise_for_status()
+            return {}
+
+        data = await response.json()
+        if not isinstance(data, dict):
+            return {}
+        if data.get("authenticated") and (token := data.get("access_token")):
+            self.access_token = token
+            _LOGGER.debug("Device-approval login approved")
+        return data
 
     async def async_logout(self) -> None:
         """

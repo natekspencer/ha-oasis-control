@@ -2,16 +2,28 @@
   "config": {
     "step": {
       "user": {
+        "description": "Enter your Oasis account email and password. You will then confirm the sign-in in the Oasis Control app.",
+        "data": {
+          "email": "Email",
+          "password": "Password"
+        }
+      },
+      "reauth_confirm": {
+        "description": "Enter your Oasis account email and password. You will then confirm the sign-in in the Oasis Control app.",
         "data": {
           "email": "Email",
           "password": "Password"
         }
       },
       "reconfigure": {
+        "description": "Enter your Oasis account email and password. You will then confirm the sign-in in the Oasis Control app.",
         "data": {
           "email": "Email",
           "password": "Password"
         }
+      },
+      "confirm": {
+        "description": "Open the Oasis Control app and approve this sign-in, either by scanning the QR code or entering the code **{code}**, then select **Submit**."
       }
     },
     "error": {
@@ -19,6 +31,9 @@
       "invalid_auth": "Invalid authentication",
       "invalid_host": "Invalid hostname or IP address",
       "timeout_connect": "Timeout establishing connection",
+      "login_pending": "Sign-in not approved yet. Approve it in the Oasis Control app, then select **Submit**.",
+      "login_rejected": "The sign-in was rejected in the app. Enter your credentials to try again.",
+      "login_expired": "The sign-in request expired. Enter your credentials to try again.",
       "unknown": "Unexpected error"
     },
     "abort": {

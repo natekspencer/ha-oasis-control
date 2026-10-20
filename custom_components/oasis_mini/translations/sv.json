@@ -2,16 +2,28 @@
   "config": {
     "step": {
       "user": {
+        "description": "Ange e-postadressen och lösenordet för ditt Oasis-konto. Du bekräftar sedan inloggningen i appen Oasis Control.",
+        "data": {
+          "email": "E-post",
+          "password": "Lösenord"
+        }
+      },
+      "reauth_confirm": {
+        "description": "Ange e-postadressen och lösenordet för ditt Oasis-konto. Du bekräftar sedan inloggningen i appen Oasis Control.",
         "data": {
           "email": "E-post",
           "password": "Lösenord"
         }
       },
       "reconfigure": {
+        "description": "Ange e-postadressen och lösenordet för ditt Oasis-konto. Du bekräftar sedan inloggningen i appen Oasis Control.",
         "data": {
           "email": "E-post",
           "password": "Lösenord"
         }
+      },
+      "confirm": {
+        "description": "Öppna appen Oasis Control och godkänn inloggningen, antingen genom att skanna QR-koden eller ange koden **{code}**, och välj sedan **Skicka**."
       }
     },
     "error": {
@@ -19,6 +31,9 @@
       "invalid_auth": "Felaktig autentisering",
       "invalid_host": "Felaktigt värdnamn eller IP-adress",
       "timeout_connect": "Det tog för lång tid att ansluta",
+      "login_pending": "Inloggningen är inte godkänd ännu. Godkänn den i appen Oasis Control och välj sedan **Skicka**.",
+      "login_rejected": "Inloggningen avvisades i appen. Ange dina uppgifter för att försöka igen.",
+      "login_expired": "Inloggningsförfrågan har upphört. Ange dina uppgifter för att försöka igen.",
       "unknown": "Oväntat fel"
     },
     "abort": {
