@@ -11,5 +11,5 @@ colorlog
 isal
 pip>=26.2.1
 pre-commit
-ruff>=0.17.1
+ruff>=0.17.2
 zlib-ng
