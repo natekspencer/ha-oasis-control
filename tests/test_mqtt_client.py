@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+import logging
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiomqtt
 from paho.mqtt.packettypes import PacketTypes
 from paho.mqtt.reasoncodes import ReasonCode
 import pytest
@@ -102,3 +105,60 @@ async def test_subscribe_rejected(
 
     assert SERIAL not in mqtt_client._subscribed_serials
     assert f"Broker rejected subscription to {SERIAL}/STATUS/#" in caplog.text
+
+
+async def test_disconnect_logs_reason(
+    device: OasisDevice, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The underlying reason is logged, not aiomqtt's generic wrapper message."""
+    client = OasisMqttClient()
+    client.register_device(device)
+
+    async def _messages() -> AsyncIterator[aiomqtt.Message]:
+        client._stop_event.set()
+        raise aiomqtt.MqttError("Disconnected during message iteration") from (
+            aiomqtt.MqttError("The connection was lost.")
+        )
+        yield
+
+    connection = MagicMock(subscribe=AsyncMock(), publish=AsyncMock())
+    connection.messages = _messages()
+    mqtt = MagicMock()
+    mqtt.return_value.__aenter__ = AsyncMock(return_value=connection)
+    mqtt.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    with (
+        patch("aiomqtt.Client", mqtt),
+        caplog.at_level(logging.INFO),
+    ):
+        await client._mqtt_loop("user", AsyncMock(return_value="token"))
+
+    assert [
+        record.levelno
+        for record in caplog.records
+        if record.getMessage() == "MQTT connection error: The connection was lost."
+    ] == [logging.INFO]
+
+
+async def test_failed_connection_warns(
+    device: OasisDevice, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Failing to connect at all is logged as a warning."""
+    client = OasisMqttClient()
+    client.register_device(device)
+
+    def _fail(*_: object) -> None:
+        client._stop_event.set()
+        raise aiomqtt.MqttError("Connection refused")
+
+    mqtt = MagicMock()
+    mqtt.return_value.__aenter__ = AsyncMock(side_effect=_fail)
+
+    with patch("aiomqtt.Client", mqtt):
+        await client._mqtt_loop("user", AsyncMock(return_value="token"))
+
+    assert [
+        record.levelno
+        for record in caplog.records
+        if record.getMessage() == "MQTT connection error: Connection refused"
+    ] == [logging.WARNING]

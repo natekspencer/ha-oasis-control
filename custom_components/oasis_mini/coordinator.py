@@ -9,13 +9,19 @@ from typing import TYPE_CHECKING
 
 from homeassistant.const import CONF_EMAIL
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 import homeassistant.util.dt as dt_util
 
 from .const import DOMAIN
-from .pyoasiscontrol import OasisCloudClient, OasisDevice, OasisMqttClient
+from .pyoasiscontrol import (
+    OasisCloudClient,
+    OasisDevice,
+    OasisMqttClient,
+    UnauthenticatedError,
+)
 
 if TYPE_CHECKING:
     from . import OasisDeviceConfigEntry
@@ -102,6 +108,7 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
             A list of OasisDevice instances representing devices currently available for the account.
 
         Raises:
+            ConfigEntryAuthFailed: If the cloud no longer accepts the access token.
             UpdateFailed: If an unexpected error persists past retry limits.
         """
         devices: list[OasisDevice] = []
@@ -194,6 +201,8 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
 
                 self.attempt = 0
 
+        except UnauthenticatedError as ex:
+            raise ConfigEntryAuthFailed(ex) from ex
         except Exception as ex:
             if self.attempt > 2 or not (devices or self.data):
                 raise UpdateFailed(
