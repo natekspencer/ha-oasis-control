@@ -191,8 +191,14 @@ jobs:
           while IFS=$'\t' read -r channel version url; do
             # One issue per monthly release, so each beta doesn't open another
             title="Tests fail on Home Assistant $(cut -d. -f1,2 <<< "$version")"
-            existing=$(gh issue list --state open --search "in:title \"$title\"" --json title --jq '.[].title')
-            if ! grep -qxF "$title" <<< "$existing"; then
-              gh issue create --title "$title" --body "Tests fail on Home Assistant $version ($channel): $url"
+            issue=$(TITLE="$title" gh issue list --state all --search "in:title \"$title\"" --json number,state,title \
+              --jq '[.[] | select(.title == env.TITLE)] | sort_by(.state != "OPEN") | .[0] | select(.) | "\(.number) \(.state)"')
+            read -r number state <<< "$issue"
+            body="Tests fail on Home Assistant $version ($channel): $url"
+            if [ -z "$number" ]; then
+              gh issue create --title "$title" --body "$body"
+            elif [ "$state" = "CLOSED" ]; then
+              # Still failing, so bring the issue back instead of opening a duplicate
+              gh issue reopen "$number" --comment "$body"
             fi
           done
