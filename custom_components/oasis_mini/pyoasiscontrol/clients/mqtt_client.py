@@ -754,11 +754,14 @@ class OasisMqttClient(OasisClientProtocol):
                 _LOGGER.warning("MQTT authentication failed: %s", err)
                 break
             except Exception as ex:  # noqa: BLE001
-                # The broker routinely drops connections after 100 messages, so only
-                # failing to connect is worth a warning. aiomqtt raises a generic
+                # The broker routinely drops connections after 100 messages, so a
+                # dropped connection isn't worth a warning. aiomqtt raises a generic
                 # error, with the reason as its cause.
+                dropped = (
+                    isinstance(ex, aiomqtt.MqttError) and self._connected_event.is_set()
+                )
                 _LOGGER.log(
-                    logging.INFO if self._connected_event.is_set() else logging.WARNING,
+                    logging.INFO if dropped else logging.WARNING,
                     "MQTT connection error: %s",
                     ex.__cause__ or ex,
                 )

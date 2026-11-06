@@ -16,6 +16,7 @@ PATH_DRAW = "0-1000/128"
         (68850, 68849, 1376),
         (20038, 20038, 400),
         (None, 100, 2),
+        (-5, 100, 2),  # Invalid line counts are ignored
     ],
 )
 def test_image_url_frame(file_lines: int | None, progress: int, frame: int) -> None:

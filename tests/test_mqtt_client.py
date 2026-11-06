@@ -140,6 +140,34 @@ async def test_disconnect_logs_reason(
     ] == [logging.INFO]
 
 
+async def test_unexpected_error_warns(
+    device: OasisDevice, caplog: pytest.LogCaptureFixture
+) -> None:
+    """An error that isn't a dropped connection is a warning, even when connected."""
+    client = OasisMqttClient()
+    client.register_device(device)
+
+    async def _messages() -> AsyncIterator[aiomqtt.Message]:
+        client._stop_event.set()
+        raise IndexError("list index out of range")
+        yield
+
+    connection = MagicMock(subscribe=AsyncMock(), publish=AsyncMock())
+    connection.messages = _messages()
+    mqtt = MagicMock()
+    mqtt.return_value.__aenter__ = AsyncMock(return_value=connection)
+    mqtt.return_value.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("aiomqtt.Client", mqtt):
+        await client._mqtt_loop("user", AsyncMock(return_value="token"))
+
+    assert [
+        record.levelno
+        for record in caplog.records
+        if record.getMessage() == "MQTT connection error: list index out of range"
+    ] == [logging.WARNING]
+
+
 async def test_failed_connection_warns(
     device: OasisDevice, caplog: pytest.LogCaptureFixture
 ) -> None:
