@@ -7,9 +7,11 @@ aiomqtt # asyncio MQTT client
 cryptography # should already be installed with Home Assistant
 
 # Development
+--requirement requirements_test.txt
 colorlog
 isal
 pip>=26.2.2
 pre-commit
+pytest-homeassistant
 ruff>=0.17.3
 zlib-ng
