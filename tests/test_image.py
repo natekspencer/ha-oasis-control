@@ -7,10 +7,6 @@ from typing import Any
 
 from freezegun.api import FrozenDateTimeFactory
 import pytest
-from pytest_homeassistant_custom_component.common import (
-    MockConfigEntry,
-    mock_restore_cache_with_extra_data,
-)
 
 from custom_components.oasis_mini.image import OasisDeviceImageEntity
 from custom_components.oasis_mini.pyoasiscontrol import OasisDevice
@@ -20,6 +16,7 @@ from homeassistant.components.image.const import DATA_COMPONENT
 from homeassistant.core import HomeAssistant, State
 from homeassistant.util import dt as dt_util
 
+from .common import MockConfigEntry, mock_restore_cache_with_extra_data
 from .conftest import DEVICE_STATUS, TRACKS
 
 ENTITY_ID = "image.oasis"

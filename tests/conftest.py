@@ -7,12 +7,13 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.oasis_mini.const import DOMAIN
 from custom_components.oasis_mini.pyoasiscontrol import OasisDevice
 from homeassistant.const import CONF_ACCESS_TOKEN, CONF_EMAIL, Platform
 from homeassistant.core import HomeAssistant
+
+from .common import MockConfigEntry
 
 SERIAL_NUMBER = "OM123456789"
 USER_ID = 1234

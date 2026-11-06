@@ -6,7 +6,6 @@ from collections.abc import Generator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.oasis_mini.const import DOMAIN
 from custom_components.oasis_mini.pyoasiscontrol import UnauthenticatedError
@@ -15,6 +14,7 @@ from homeassistant.const import CONF_ACCESS_TOKEN, CONF_EMAIL, CONF_PASSWORD
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 
+from .common import MockConfigEntry
 from .conftest import USER_ID
 
 EMAIL = "user@example.com"
