@@ -1,6 +1,6 @@
 {
   "name": "Oasis Control",
-  "homeassistant": "2024.5.0",
+  "homeassistant": "2025.11.0",
   "render_readme": true,
   "zip_release": true,
   "filename": "oasis_mini.zip"
