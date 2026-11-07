@@ -183,6 +183,8 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
                 # Best-effort playlists
                 try:
                     await self.cloud_client.async_get_playlists()
+                except UnauthenticatedError:
+                    raise
                 except Exception:
                     _LOGGER.exception("Error fetching playlists from cloud")
 

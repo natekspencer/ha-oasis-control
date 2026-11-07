@@ -185,7 +185,11 @@ class OasisMqttClient(OasisClientProtocol):
                 return
 
             topic = f"{serial}/STATUS/#"
-            result = await self._client.subscribe([(topic, 1)])
+            try:
+                result = await self._client.subscribe([(topic, 1)])
+            except aiomqtt.MqttError as err:
+                _LOGGER.warning("Failed to subscribe to %s: %s", topic, err)
+                raise
             if any(
                 code >= 0x80 if isinstance(code, int) else code.is_failure
                 for code in result or ()

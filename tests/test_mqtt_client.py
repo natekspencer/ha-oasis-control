@@ -107,6 +107,24 @@ async def test_subscribe_rejected(
     assert f"Broker rejected subscription to {SERIAL}/STATUS/#" in caplog.text
 
 
+async def test_subscribe_timeout_warns(
+    mqtt_client: OasisMqttClient, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A subscription that fails is a warning, and still restarts the connection."""
+    mqtt_client._client.subscribe.side_effect = aiomqtt.MqttError("Operation timed out")
+
+    with pytest.raises(aiomqtt.MqttError):
+        await mqtt_client._subscribe_serial(SERIAL)
+
+    assert SERIAL not in mqtt_client._subscribed_serials
+    assert [
+        record.levelno
+        for record in caplog.records
+        if record.getMessage()
+        == f"Failed to subscribe to {SERIAL}/STATUS/#: Operation timed out"
+    ] == [logging.WARNING]
+
+
 async def test_disconnect_logs_reason(
     device: OasisDevice, caplog: pytest.LogCaptureFixture
 ) -> None:
