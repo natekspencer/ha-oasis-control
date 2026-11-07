@@ -185,7 +185,11 @@ class OasisMqttClient(OasisClientProtocol):
                 return
 
             topic = f"{serial}/STATUS/#"
-            result = await self._client.subscribe([(topic, 1)])
+            try:
+                result = await self._client.subscribe([(topic, 1)])
+            except aiomqtt.MqttError as err:
+                _LOGGER.warning("Failed to subscribe to %s: %s", topic, err)
+                raise
             if any(
                 code >= 0x80 if isinstance(code, int) else code.is_failure
                 for code in result or ()
@@ -754,7 +758,17 @@ class OasisMqttClient(OasisClientProtocol):
                 _LOGGER.warning("MQTT authentication failed: %s", err)
                 break
             except Exception as ex:  # noqa: BLE001
-                _LOGGER.warning("MQTT connection error: %s", ex)
+                # The broker routinely drops connections after 100 messages, so a
+                # dropped connection isn't worth a warning. aiomqtt raises a generic
+                # error, with the reason as its cause.
+                dropped = (
+                    isinstance(ex, aiomqtt.MqttError) and self._connected_event.is_set()
+                )
+                _LOGGER.log(
+                    logging.INFO if dropped else logging.WARNING,
+                    "MQTT connection error: %s",
+                    ex.__cause__ or ex,
+                )
 
             finally:
                 if self._connected_event.is_set():

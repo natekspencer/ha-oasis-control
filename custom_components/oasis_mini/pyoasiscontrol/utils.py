@@ -210,6 +210,9 @@ def get_image_url_from_track(
     if not isinstance(track, dict):
         return None
     if progress is not None and (path_draw := track.get("path_draw")):
+        # A finished track reports its line count, but the last frame is before that
+        if (file_lines := _parse_int(track.get("file_lines"))) > 0:
+            progress = min(progress, file_lines - 1)
         return IMAGE_PROGRESS_URL.format(
             path_draw=path_draw, progress=math.floor(progress / 50)
         )
