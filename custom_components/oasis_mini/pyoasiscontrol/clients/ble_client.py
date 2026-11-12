@@ -29,6 +29,8 @@ OASIS_CHARACTERISTIC_UUID: Final = "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 WRITE_MIN_INTERVAL: Final = 1.0
 COMMAND_TIMEOUT: Final = 3.0
 PLAYLIST_TIMEOUT: Final = 10.0
+# The app waits this long for the playlist to sync back after writing it
+PLAYLIST_WRITE_TIMEOUT: Final = 20.0
 
 # Commands whose notifications carry device status fields
 _STATUS_COMMANDS: Final = ("GETSTATUS", "LINESTATUS", "DOWNLOADSTATUS")
@@ -450,10 +452,18 @@ class OasisBleClient(OasisClientProtocol):
             )
             return
 
+        await self._async_sync_playlist(
+            {"command": "GETPLAYLIST", "part": "0"}, PLAYLIST_TIMEOUT
+        )
+
+    async def _async_sync_playlist(
+        self, payload: dict[str, Any], timeout: float
+    ) -> None:
+        """Send a command and wait for the device to push its full playlist back."""
         self._playlist_done.clear()
-        await self._async_send({"command": "GETPLAYLIST", "part": "0"})
+        await self._async_send(payload)
         try:
-            async with asyncio.timeout(PLAYLIST_TIMEOUT):
+            async with asyncio.timeout(timeout):
                 await self._playlist_done.wait()
         except TimeoutError:
             _LOGGER.debug("Timed out syncing playlist from %s", self.address)
@@ -518,8 +528,17 @@ class OasisBleClient(OasisClientProtocol):
     async def async_send_set_playlist_command(
         self, device: OasisDevice, playlist: list[int]
     ) -> None:
-        """Replace the playlist."""
-        await self._async_command("WRIJOBLIST", value=",".join(map(str, playlist)))
+        """
+        Replace the playlist.
+
+        The device doesn't acknowledge WRIJOBLIST; like the app, wait for it to push
+        the new playlist back instead.
+        """
+        payload = {"command": "WRIJOBLIST", "value": ",".join(map(str, playlist))}
+        if self.legacy_firmware:
+            await self._async_send(payload)
+        else:
+            await self._async_sync_playlist(payload, PLAYLIST_WRITE_TIMEOUT)
 
     async def async_send_set_repeat_playlist_command(
         self, device: OasisDevice, repeat: bool

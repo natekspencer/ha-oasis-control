@@ -10,15 +10,21 @@ from typing import Any
 from aiohttp import ClientConnectorError, ClientResponseError
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlowWithReload,
+)
 from homeassistant.const import CONF_ACCESS_TOKEN, CONF_EMAIL, CONF_PASSWORD
+from homeassistant.core import callback
 from homeassistant.helpers.selector import (
     QrCodeSelector,
     QrCodeSelectorConfig,
     QrErrorCorrectionLevel,
 )
 
-from .const import DOMAIN
+from .const import CONF_USE_BLUETOOTH, DOMAIN
 from .helpers import create_client
 from .pyoasiscontrol import OasisCloudClient, UnauthenticatedError
 
@@ -27,6 +33,7 @@ _LOGGER = logging.getLogger(__name__)
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {vol.Required(CONF_EMAIL): str, vol.Required(CONF_PASSWORD): str}
 )
+OPTIONS_SCHEMA = vol.Schema({vol.Required(CONF_USE_BLUETOOTH, default=False): bool})
 
 # Steps that collect credentials; each matches an async_step_<id> entry point
 CREDENTIALS_STEPS = ("user", "reauth_confirm", "reconfigure")
@@ -43,6 +50,12 @@ class OasisDeviceConfigFlow(ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
     MINOR_VERSION = 3
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> OasisDeviceOptionsFlow:
+        """Return the options flow for this handler."""
+        return OasisDeviceOptionsFlow()
 
     _email: str | None = None
     _challenge: dict[str, Any] | None = None
@@ -253,4 +266,22 @@ class OasisDeviceConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=data_schema,
             errors=errors or {},
             description_placeholders={"code": self._challenge["code"]},
+        )
+
+
+class OasisDeviceOptionsFlow(OptionsFlowWithReload):
+    """Handle options for Oasis devices; the entry reloads when they change."""
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Show the options form, or save the submitted options."""
+        if user_input is not None:
+            return self.async_create_entry(data=user_input)
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self.add_suggested_values_to_schema(
+                OPTIONS_SCHEMA, self.config_entry.options
+            ),
         )

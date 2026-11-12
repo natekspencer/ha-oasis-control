@@ -58,12 +58,19 @@ def device_status() -> dict[str, Any]:
 
 
 @pytest.fixture
-def mock_config_entry() -> MockConfigEntry:
+def entry_options() -> dict[str, Any]:
+    """Config entry options; override to change the options at setup."""
+    return {}
+
+
+@pytest.fixture
+def mock_config_entry(entry_options: dict[str, Any]) -> MockConfigEntry:
     """Return a config entry for the integration."""
     return MockConfigEntry(
         domain=DOMAIN,
         unique_id=str(USER_ID),
         data={CONF_EMAIL: "user@example.com", CONF_ACCESS_TOKEN: "token"},
+        options=entry_options,
         version=1,
         minor_version=3,
     )

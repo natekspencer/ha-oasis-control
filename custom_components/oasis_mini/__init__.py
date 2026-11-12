@@ -15,7 +15,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 import homeassistant.helpers.entity_registry as er
 
-from .const import DOMAIN
+from .const import CONF_USE_BLUETOOTH, DOMAIN
 from .coordinator import OasisDeviceCoordinator
 from .entity import OasisDeviceEntity
 from .helpers import create_client
@@ -142,7 +142,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: OasisDeviceConfigEntry) 
         _LOGGER.warning("No devices associated with account")
 
     entry.runtime_data = coordinator
-    coordinator.async_setup_bluetooth()
+    if entry.options.get(CONF_USE_BLUETOOTH, False):
+        coordinator.async_setup_bluetooth()
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

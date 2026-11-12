@@ -44,20 +44,6 @@ BLE_RETRY_INTERVAL = 60
 BLE_RECONNECT_DELAY = 5
 
 
-async def fake_devices(self):
-    return [
-        {"serial_number": "OM241704853", "name": None, "model": {"name": "Oasis Mini"}},
-        {"serial_number": "OM242701898", "name": None, "model": {"name": "Oasis Mini"}},
-        {"serial_number": "OM242700010", "name": None, "model": {"name": "Oasis Mini"}},
-    ]
-
-
-# # Override the method
-# OasisCloudClient.async_get_devices = fake_devices.__get__(
-#     OasisCloudClient, type(OasisCloudClient)
-# )
-
-
 class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
     """Oasis device data update coordinator."""
 
@@ -82,7 +68,7 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
             _LOGGER,
             config_entry=config_entry,
             name=DOMAIN,
-            update_interval=timedelta(minutes=2),
+            update_interval=timedelta(minutes=10),
             always_update=False,
         )
         self.cloud_client = cloud_client
@@ -94,7 +80,8 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         # Bluetooth clients by address, plus probe bookkeeping
         self.ble_clients: dict[str, OasisBleClient] = {}
         self._ble_probing: set[str] = set()
-        self._ble_ignored: set[str] = set()
+        # Advertisers identified as devices not on this account, by address => serial
+        self._ble_ignored: dict[str, str] = {}
         self._ble_reconnect_tasks: dict[str, asyncio.Task[None]] = {}
 
         # Track which devices are currently considered initialized
@@ -271,6 +258,9 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         from homeassistant.components import bluetooth
 
         self.config_entry.async_on_unload(
+            self.async_add_listener(self._async_ble_reprobe_ignored)
+        )
+        self.config_entry.async_on_unload(
             bluetooth.async_register_callback(
                 self.hass,
                 self._async_ble_discovered,
@@ -302,7 +292,22 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
             or address in self._ble_ignored
         ):
             return
+        self._async_start_ble_probe(address)
 
+    @callback
+    def _async_ble_reprobe_ignored(self) -> None:
+        """Probe ignored BLE devices again once they are added to the account."""
+        if not self._ble_ignored:
+            return
+        serials = {d.serial_number for d in self.data or []}
+        for address, serial in list(self._ble_ignored.items()):
+            if serial in serials:
+                del self._ble_ignored[address]
+                self._async_start_ble_probe(address)
+
+    @callback
+    def _async_start_ble_probe(self, address: str) -> None:
+        """Start identifying a BLE advertiser in the background."""
         self._ble_probing.add(address)
         self.config_entry.async_create_background_task(
             self.hass, self._async_probe_ble(address), f"{DOMAIN} BLE probe {address}"
@@ -329,17 +334,16 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         finally:
             self._ble_probing.discard(address)
         serial = client.serial_number
+        assert serial is not None
 
-        device = next(
-            (d for d in self.data or [] if serial and d.serial_number == serial), None
-        )
+        device = next((d for d in self.data or [] if d.serial_number == serial), None)
         if device is None:
             _LOGGER.debug(
                 "Oasis BLE device %s (%s) is not on this account; ignoring",
                 address,
                 serial,
             )
-            self._ble_ignored.add(address)
+            self._ble_ignored[address] = serial
             await client.async_close()
             return
 

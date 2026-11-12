@@ -46,15 +46,11 @@
   "options": {
     "step": {
       "init": {
-        "description": "Add your cloud credentials to get additional information about your device",
+        "description": "Connecting directly over Bluetooth gives faster, more reliable updates when the table is in range. The table accepts a single Bluetooth connection, so while Home Assistant is connected the Oasis app can't connect over Bluetooth and will use the cloud instead.",
         "data": {
-          "email": "[%key:common::config_flow::data::email%]",
-          "password": "[%key:common::config_flow::data::password%]"
+          "use_bluetooth": "Connect over Bluetooth when in range"
         }
       }
-    },
-    "error": {
-      "invalid_auth": "[%key:common::config_flow::error::invalid_auth%]"
     }
   },
   "entity": {
