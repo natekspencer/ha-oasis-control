@@ -106,6 +106,8 @@ def mock_mqtt_client(device_status: dict[str, Any]) -> Generator[MagicMock]:
     client.is_running = False
     client.async_close = AsyncMock()
     client.async_get_status = AsyncMock()
+    # Devices haven't published over MQTT unless a test says so
+    client.last_seen.return_value = None
 
     def _register_devices(devices: list[OasisDevice]) -> None:
         for device in devices:

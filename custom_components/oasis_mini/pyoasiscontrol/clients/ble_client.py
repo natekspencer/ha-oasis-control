@@ -37,6 +37,8 @@ MAX_PLAYLIST_SIZE: Final = 40
 
 # Commands whose notifications carry device status fields
 _STATUS_COMMANDS: Final = ("GETSTATUS", "LINESTATUS", "DOWNLOADSTATUS")
+# Commands later steps depend on, so firmware not supporting them is an error
+_REQUIRED_COMMANDS: Final = frozenset({"CMDSTOP"})
 
 
 def _parse_color(value: str) -> str | None:
@@ -97,6 +99,10 @@ class OasisBleClient(OasisClientProtocol):
     Note: the device accepts a single BLE connection, so while this client is
     connected the mobile app cannot use Bluetooth.
     """
+
+    # Whether a full sync (identity, status and playlist) has completed over the
+    # current connection
+    synced: bool = False
 
     def __init__(
         self,
@@ -226,6 +232,7 @@ class OasisBleClient(OasisClientProtocol):
     def _handle_disconnect(self, _client: BleakClient) -> None:
         """Handle an unexpected disconnect from the device."""
         self._client = None
+        self.synced = False
         self._fail_waiters(BleakError(f"Oasis device {self.address} disconnected"))
         if self._closing:
             return
@@ -276,9 +283,6 @@ class OasisBleClient(OasisClientProtocol):
             if self._client is None:
                 raise BleakError(f"Oasis device {self.address} disconnected")
             future: asyncio.Future[dict[str, Any]] | None = None
-            if response:
-                future = asyncio.get_running_loop().create_future()
-                self._waiters.setdefault(response, []).append(future)
             try:
                 if (
                     delay := WRITE_MIN_INTERVAL - (time.monotonic() - self._last_write)
@@ -286,6 +290,11 @@ class OasisBleClient(OasisClientProtocol):
                     await asyncio.sleep(delay)
                     if self._client is None:
                         raise BleakError(f"Oasis device {self.address} disconnected")
+                # Registered only now, just before the write, so a late reply to an
+                # earlier command arriving during the pacing wait can't complete it
+                if response:
+                    future = asyncio.get_running_loop().create_future()
+                    self._waiters.setdefault(response, []).append(future)
                 _LOGGER.debug("BLE write %s => %s", self.address, data.decode())
                 await self._client.write_gatt_char(
                     OASIS_CHARACTERISTIC_UUID, data, response=True
@@ -329,11 +338,13 @@ class OasisBleClient(OasisClientProtocol):
         if reply is None:
             return
         if reply.get("command") == "UNKNOWN":
-            _LOGGER.warning(
-                "Oasis %s firmware does not support BLE command %s",
-                self.serial_number or self.address,
-                command,
+            message = (
+                f"Oasis {self.serial_number or self.address} firmware does not "
+                f"support BLE command {command}"
             )
+            if command in _REQUIRED_COMMANDS:
+                raise CommandRejectedError(message)
+            _LOGGER.warning(message)
         elif _has_value(status := reply.get("status")) and str(status) != "1":
             raise CommandRejectedError(
                 f"Oasis {self.serial_number or self.address} rejected BLE command "
@@ -370,6 +381,15 @@ class OasisBleClient(OasisClientProtocol):
             key = self._extract_received_command(message.get("received"))
             if key in ("GETSTATUS", "GETPLAYLIST"):
                 self.legacy_firmware = True
+            # Firmware without GETPLAYLIST over BLE answers it with UNKNOWN (the app
+            # treats it as legacy too), so a sync waiting for the playlist is done
+            if (
+                key == "GETPLAYLIST"
+                and (waiter := self._playlist_waiter) is not None
+                and not waiter.done()
+                and self._playlist_expected is None
+            ):
+                waiter.set_result([])
 
         try:
             self._process_message(message)
@@ -514,18 +534,19 @@ class OasisBleClient(OasisClientProtocol):
         await self._async_send({"command": "GETSOFTWAREVER"}, "GETSOFTWAREVER")
         await self._async_send({"command": "WIFISTATUS"}, "WIFISTATUS")
         await self._async_send({"command": "GETSTATUS"}, "GETSTATUS")
-        if self.legacy_firmware:
-            if not self._legacy_warned:
-                self._legacy_warned = True
-                _LOGGER.warning(
-                    "Oasis %s firmware does not report status over BLE",
-                    device.serial_number,
-                )
-            return
-
-        await self._async_sync_playlist(
-            {"command": "GETPLAYLIST", "part": "0"}, PLAYLIST_TIMEOUT
-        )
+        if not self.legacy_firmware:
+            await self._async_sync_playlist(
+                {"command": "GETPLAYLIST", "part": "0"}, PLAYLIST_TIMEOUT
+            )
+        if self.legacy_firmware and not self._legacy_warned:
+            self._legacy_warned = True
+            _LOGGER.warning(
+                "Oasis %s firmware does not report status over BLE",
+                device.serial_number,
+            )
+        # Missed identity replies time out quietly, so only an identified device
+        # counts as synced; a failed playlist transfer raises before this
+        self.synced = device.is_initialized
 
     async def _async_sync_playlist(
         self,

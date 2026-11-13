@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -271,6 +272,7 @@ async def test_resubscribe_refreshes_legacy_ble_devices(
     refreshed: bool,
 ) -> None:
     """Legacy BLE firmware relies on MQTT for status, so it's refreshed on reconnect."""
+    device.update_from_status_dict({"mac_address": "aa", "software_version": "3.54"})
     device.attach_client(MagicMock(legacy_firmware=legacy))
     mqtt_client._client.subscribe.return_value = [0]
 
@@ -303,3 +305,24 @@ async def test_device_last_seen_only_once_it_publishes(
 
     mqtt_client._connected_event.clear()
     assert mqtt_client.last_seen(device) is None
+
+
+async def test_message_after_ble_lost_access_notifies(
+    mqtt_client: OasisMqttClient, device: OasisDevice
+) -> None:
+    """A message newer than BLE's lost-access report changes reachability."""
+    listener = MagicMock()
+    mqtt_client.add_connection_listener(listener)
+    await mqtt_client._handle_status_message(_message("OASIS_STATUS", "4"))
+    listener.reset_mock()
+
+    # Nothing changes while the device keeps publishing
+    await mqtt_client._handle_status_message(_message("OASIS_STATUS", "4"))
+    listener.assert_not_called()
+
+    # BLE reports remote access lost, then MQTT hears from the device again
+    device.update_from_status_dict(
+        {"remote_access": "inactive", "remote_access_updated": datetime.now(UTC)}
+    )
+    await mqtt_client._handle_status_message(_message("OASIS_STATUS", "4"))
+    listener.assert_called_once()

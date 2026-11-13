@@ -400,3 +400,97 @@ async def test_mac_kept_when_schedule_fails(
     coordinator = await setup(hass, init_integration)
 
     assert coordinator.data[0].mac_address == MAC
+    # The schedule is optional, so local control is still used
+    assert isinstance(coordinator.data[0].client, OasisHttpClient)
+
+
+def mock_device_replies(
+    aioclient_mock: AiohttpClientMocker, replies: dict[str, str]
+) -> None:
+    """Answer the device's HTTP API from the given replies."""
+
+    async def _reply(method: str, url: URL, data: Any) -> AiohttpClientMockResponse:
+        return AiohttpClientMockResponse(
+            method, url, text=replies[next(iter(url.query))], headers=TEXT
+        )
+
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(BASE_URL, side_effect=_reply)
+
+
+async def test_full_sync_retried_until_identified(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    init_integration: MockConfigEntry,
+) -> None:
+    """A device answering without its MAC keeps getting the full sync."""
+    replies = {"GETSTATUS": STATUS, "GETMAC": "", "GETSCH": "{}"}
+    mock_device_replies(aioclient_mock, replies)
+    coordinator = await setup(hass, init_integration)
+    device = coordinator.data[0]
+    assert not device.is_initialized
+
+    replies["GETMAC"] = MAC
+    await poll(hass, coordinator)
+
+    assert device.mac_address == MAC
+    assert device.is_initialized
+
+
+async def test_different_device_at_address_not_used(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    init_integration: MockConfigEntry,
+    mock_mqtt_client: MagicMock,
+) -> None:
+    """Another table answering on the device's old IP isn't controlled."""
+    device = init_integration.runtime_data.data[0]
+    device.update_from_status_dict({"mac_address": "11:22:33:44:55:66"})
+    mock_device(aioclient_mock)
+    coordinator = await setup(hass, init_integration)
+
+    assert not coordinator.http_clients[SERIAL_NUMBER].is_connected
+    assert device.client is mock_mqtt_client
+    assert device.mac_address == "11:22:33:44:55:66"
+
+
+async def test_reply_from_previous_host_ignored(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    init_integration: MockConfigEntry,
+) -> None:
+    """A reply that arrives after the device moved isn't applied."""
+    mock_device_offline(aioclient_mock)
+    coordinator = await setup(hass, init_integration)
+    client = coordinator.http_clients[SERIAL_NUMBER]
+    device = coordinator.data[0]
+
+    async def _reply(method: str, url: URL, data: Any) -> AiohttpClientMockResponse:
+        client.host = "10.0.0.99"  # Moved while the request was in flight
+        return AiohttpClientMockResponse(method, url, text=STATUS, headers=TEXT)
+
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(BASE_URL, side_effect=_reply)
+
+    with pytest.raises(ValueError, match="moved"):
+        await client.async_get_status(device)
+    assert not client.is_connected
+    assert client.last_status is None
+
+
+async def test_version_fetched_when_status_lacks_it(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    init_integration: MockConfigEntry,
+) -> None:
+    """Firmware whose status has no version still gets identified over HTTP."""
+    status = STATUS.rsplit(";", 1)[0]  # 18 fields, no trailing version
+    mock_device_replies(
+        aioclient_mock,
+        {"GETSTATUS": status, "GETMAC": MAC, "GETSOFTWAREVER": "2.80", "GETSCH": "{}"},
+    )
+    coordinator = await setup(hass, init_integration)
+    device = coordinator.data[0]
+
+    assert device.software_version == "2.80"
+    assert device.is_initialized

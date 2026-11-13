@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Iterable
 import contextlib
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import logging
 import ssl
 from typing import Any, Final
@@ -82,6 +82,9 @@ class OasisMqttClient(OasisClientProtocol):
         # When each device last published during the current broker connection;
         # the broker connection alone doesn't mean a device is reachable through it
         self._last_seen: dict[str, datetime] = {}
+        # How long a message counts as showing the device is reachable (set by the
+        # caller), used to notify listeners when a message makes it reachable again
+        self.reachable_for = timedelta(minutes=3)
 
         # Subscription bookkeeping
         self._subscribed_serials: set[str] = set()
@@ -282,10 +285,12 @@ class OasisMqttClient(OasisClientProtocol):
             await self._subscribe_serial(serial)
             # Devices attached to another transport (e.g. BLE) refresh themselves,
             # except over legacy BLE firmware, which only reports identity and Wi-Fi
-            # state and relies on MQTT for everything else
+            # state and relies on MQTT for everything else, and devices that still
+            # aren't fully identified (e.g. HTTP status without a firmware version)
             if (
                 device.client is self
                 or getattr(device.client, "legacy_firmware", False)
+                or not device.is_initialized
             ) and not device.is_sleeping:
                 await self.async_get_all(device)
 
@@ -978,11 +983,23 @@ class OasisMqttClient(OasisClientProtocol):
         if data:
             device.update_from_status_dict(data, source=self)
 
-        first_seen = serial not in self._last_seen
-        self._last_seen[serial] = datetime.now(UTC)
-        if first_seen:
-            # The device is reachable through the broker; let listeners know even if
-            # this message changed nothing
+        seen = datetime.now(UTC)
+        previous = self._last_seen.get(serial)
+        self._last_seen[serial] = seen
+        # Let listeners know when this message changes whether the device counts as
+        # reachable over the broker, even if it changed nothing else: its first
+        # message, one after it had gone quiet too long, or one newer than a BLE
+        # report that remote access was lost
+        reported = device.remote_access_updated
+        if (
+            previous is None
+            or seen - previous >= self.reachable_for
+            or (
+                reported is not None
+                and device.remote_access != "active"
+                and previous < reported <= seen
+            )
+        ):
             self._notify_connection_listeners()
 
         is_initialized_event = self._initialized_events.setdefault(

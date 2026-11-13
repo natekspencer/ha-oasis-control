@@ -14,6 +14,7 @@ from custom_components.oasis_mini.pyoasiscontrol import (
 )
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntry
 from homeassistant.core import HomeAssistant
+import homeassistant.util.dt as dt_util
 
 from .common import MockConfigEntry
 from .conftest import SERIAL_NUMBER
@@ -67,6 +68,7 @@ def _ble_client(**attrs: object) -> MagicMock:
     client.serial_number = SERIAL_NUMBER
     client.is_connected = True
     client.legacy_firmware = False
+    client.synced = True
     client.async_get_status = AsyncMock()
     for name, value in attrs.items():
         setattr(client, name, value)
@@ -281,13 +283,14 @@ async def test_ble_poll_retries_sync_until_initialized(
     """A missed identity reply is retried by the poll, without reconnecting."""
     coordinator = init_integration.runtime_data
     device = coordinator.data[0]
-    client = _ble_client()
+    client = _ble_client(synced=False)
     client.async_connect = AsyncMock()
 
     async def _get_all(_device: OasisDevice) -> None:
         device.update_from_status_dict(
             {"mac_address": "aa:bb:cc:dd:ee:ff", "software_version": "3.54"}
         )
+        client.synced = True
 
     client.async_get_all = AsyncMock(side_effect=_get_all)
     device.attach_client(client)
@@ -372,3 +375,72 @@ async def test_rejected_token_discards_new_devices(
     (unregistered,) = mock_mqtt_client.unregister_device.call_args.args
     assert unregistered.serial_number == "OM-NEW"
     assert list(init_integration.async_get_active_flows(hass, {SOURCE_REAUTH}))
+
+
+async def test_malformed_cloud_response_uses_cache(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_cloud_client: MagicMock,
+) -> None:
+    """A malformed device list falls back to the cache like an outage does."""
+    coordinator = init_integration.runtime_data
+    device = coordinator.data[0]
+    mock_cloud_client.async_get_devices.return_value = None
+
+    await coordinator.async_refresh()
+
+    assert coordinator.last_update_success
+    assert not coordinator.cloud_available
+    assert coordinator.data == [device]
+
+
+async def test_removed_device_unregistered_from_mqtt(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_cloud_client: MagicMock,
+    mock_mqtt_client: MagicMock,
+) -> None:
+    """A removed device stops receiving MQTT updates before its transports go."""
+    coordinator = init_integration.runtime_data
+    device = coordinator.data[0]
+    mock_cloud_client.async_get_devices.return_value = []
+
+    await coordinator.async_refresh()
+
+    mock_mqtt_client.unregister_device.assert_called_once_with(device)
+
+
+async def test_mqtt_freshness_expiry_notifies(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_mqtt_client: MagicMock,
+) -> None:
+    """MQTT going stale updates entities even while the device still responds."""
+    coordinator = init_integration.runtime_data
+    mock_mqtt_client.last_seen.return_value = dt_util.utcnow()
+    coordinator._async_check_liveness()
+
+    mock_mqtt_client.last_seen.return_value = None
+    with patch.object(coordinator, "async_update_listeners") as mock_update:
+        coordinator._async_check_liveness()
+        mock_update.assert_called_once()
+
+        # Nothing changed since, so no further updates
+        coordinator._async_check_liveness()
+        mock_update.assert_called_once()
+
+
+async def test_removed_device_not_reprobed_before_commit(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+) -> None:
+    """An advertiser being removed isn't reprobed while the old data has it."""
+    coordinator = init_integration.runtime_data
+    coordinator._removed_serials.add(SERIAL_NUMBER)
+    coordinator._ble_ignored["AA:AA:AA:AA:AA:AA"] = SERIAL_NUMBER
+
+    with patch.object(coordinator, "_async_start_ble_probe") as mock_probe:
+        coordinator._async_ble_reprobe_ignored()
+
+    mock_probe.assert_not_called()
+    assert coordinator._ble_ignored == {"AA:AA:AA:AA:AA:AA": SERIAL_NUMBER}

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from aiohttp import ClientError
+from freezegun.api import FrozenDateTimeFactory
 import pytest
 
 from custom_components.oasis_mini.const import DOMAIN
@@ -14,7 +16,7 @@ from homeassistant.const import STATE_UNAVAILABLE, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
-from .common import MockConfigEntry
+from .common import MockConfigEntry, async_fire_time_changed
 from .conftest import SERIAL_NUMBER
 
 HOST = "10.0.0.5"
@@ -171,6 +173,27 @@ async def test_remove_entry_deletes_cache(
     }
 
     await hass.config_entries.async_remove(init_integration.entry_id)
+    await hass.async_block_till_done()
+
+    assert cache_key(init_integration) not in hass_storage
+
+
+async def test_pending_cache_save_does_not_outlive_removal(
+    hass: HomeAssistant,
+    hass_storage: dict[str, Any],
+    freezer: FrozenDateTimeFactory,
+    init_integration: MockConfigEntry,
+    mock_cloud_client: MagicMock,
+) -> None:
+    """A cache change still waiting to be saved can't recreate it after removal."""
+    mock_cloud_client.async_logout = AsyncMock()
+    mock_cloud_client.async_get_devices.return_value[0]["ip"] = "10.0.0.42"
+    await init_integration.runtime_data.async_refresh()
+
+    await hass.config_entries.async_remove(init_integration.entry_id)
+    await hass.async_block_till_done()
+    freezer.tick(timedelta(seconds=5))
+    async_fire_time_changed(hass)
     await hass.async_block_till_done()
 
     assert cache_key(init_integration) not in hass_storage

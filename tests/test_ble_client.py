@@ -448,3 +448,74 @@ async def test_rejected_command_raises(
         await device.async_set_playlist([7, 8])
 
     assert [c["command"] for c in _written(client)] == ["CMDSTOP"]
+
+
+async def test_synced_only_after_full_sync(
+    client: OasisBleClient,
+    device: OasisDevice,
+    responses: dict[str, Responder],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed playlist transfer leaves the client unsynced, so it's retried."""
+    monkeypatch.setattr(ble_client, "PLAYLIST_TIMEOUT", 0.01)
+    responses["GETSTATUS"] = lambda _: [{"command": "GETSTATUS", "st": "2"}]
+
+    with pytest.raises(TimeoutError):
+        await client.async_get_all(device)
+    assert device.is_initialized
+    assert not client.synced
+
+    responses["GETPLAYLIST"] = lambda _: _playlist_push("GETPLAYLIST", [101])
+    await client.async_get_all(device)
+    assert client.synced
+
+
+async def test_unsupported_playlist_completes_sync(
+    client: OasisBleClient, device: OasisDevice, responses: dict[str, Responder]
+) -> None:
+    """Firmware answering GETPLAYLIST with UNKNOWN finishes the sync right away."""
+    responses["GETSTATUS"] = lambda _: [{"command": "GETSTATUS", "st": "2"}]
+    responses["GETPLAYLIST"] = lambda _: [
+        {"command": "UNKNOWN", "received": '{"command":"GETPLAYLIST","part":"0"}'}
+    ]
+
+    async with asyncio.timeout(1):
+        await client.async_get_all(device)
+
+    assert client.legacy_firmware
+    assert client.synced
+
+
+async def test_unsupported_stop_raises(
+    client: OasisBleClient, device: OasisDevice, responses: dict[str, Responder]
+) -> None:
+    """A stop the firmware doesn't support stops a playlist replacement."""
+    responses["CMDSTOP"] = lambda _: [{"command": "UNKNOWN", "received": "CMDSTOP"}]
+
+    with pytest.raises(CommandRejectedError, match="CMDSTOP"):
+        await device.async_set_playlist([7, 8])
+
+    assert [c["command"] for c in _written(client)] == ["CMDSTOP"]
+
+
+async def test_late_reply_during_pacing_not_taken(
+    client: OasisBleClient, device: OasisDevice, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A late reply to an earlier request, arriving before this one is sent, is ignored."""
+    monkeypatch.setattr(ble_client, "WRITE_MIN_INTERVAL", 0.05)
+    client._last_write = ble_client.time.monotonic()
+    task = asyncio.create_task(
+        client._async_send({"command": "GETSTATUS"}, "GETSTATUS")
+    )
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    _notify(client, {"command": "GETSTATUS", "st": "9"})  # Late, during pacing
+    async with asyncio.timeout(1):
+        while not _written(client):
+            await asyncio.sleep(0.01)
+    assert not task.done()
+
+    _notify(client, {"command": "GETSTATUS", "st": "4"})
+    reply = await task
+    assert reply == {"command": "GETSTATUS", "st": "4"}

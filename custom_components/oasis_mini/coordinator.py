@@ -107,7 +107,9 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         self.cloud_available = True
         self._store = device_cache_store(hass, config_entry.entry_id)
         self._device_cache: list[dict[str, Any]] | None = None
+        self._device_cache_dirty = False
         self.mqtt_client = OasisMqttClient()
+        self.mqtt_client.reachable_for = STALE_AFTER
         config_entry.async_on_unload(
             self.mqtt_client.add_connection_listener(self.async_update_listeners)
         )
@@ -119,6 +121,9 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         self._ble_ignored: dict[str, str] = {}
         # Advertisers identified as devices whose Bluetooth switch is off
         self._ble_disabled: dict[str, str] = {}
+        # Serials removed from the account by a refresh, until they're added back;
+        # their advertisers aren't reprobed while still in the old data
+        self._removed_serials: set[str] = set()
         self.bluetooth_available = False
         self._ble_reconnect_tasks: dict[str, asyncio.Task[None]] = {}
         self._ble_polling: set[str] = set()
@@ -137,8 +142,10 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         # Set once async_close starts, so in-flight probes can't add BLE clients
         self._shutting_down = False
 
-        # Last reported responsiveness by serial, and devices being asked for status
+        # Last reported responsiveness and MQTT freshness by serial, and devices
+        # being asked for status
         self._responding: dict[str, bool] = {}
+        self._mqtt_fresh: dict[str, bool] = {}
         self._liveness_probing: set[str] = set()
         config_entry.async_on_unload(
             async_track_time_interval(
@@ -243,15 +250,20 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
                 # Handle devices removed from the account
                 new_serials = {d.serial_number for d in devices if d.serial_number}
                 removed_serials = set(existing_by_serial) - new_serials
+                self._removed_serials -= new_serials
+                self._removed_serials |= removed_serials
 
                 if removed_serials:
                     device_registry = dr.async_get(self.hass)
                     for serial in removed_serials:
                         self._initialized_serials.discard(serial)
                         self._cloud_ips.pop(serial, None)
-                        self._async_stop_http(serial)
+                        # Unregistered first, so its MQTT updates (e.g. WIFI_IP) can't
+                        # restart HTTP polling while its transports are released
+                        self.mqtt_client.unregister_device(existing_by_serial[serial])
                         # Reprobed by _async_ble_reprobe_ignored if it's added back
                         await self._async_release_ble(serial, self._ble_ignored)
+                        self._async_stop_http(serial)
                         _LOGGER.info(
                             "Oasis device %s removed from account; cleaning up in HA",
                             serial,
@@ -382,6 +394,10 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         try:
             async with asyncio.timeout(30):
                 raw_devices = await self.cloud_client.async_get_devices()
+            if not isinstance(raw_devices, list):
+                raise TypeError(f"Unexpected device list: {raw_devices!r:.100}")
+            # Anything that isn't a device entry is skipped
+            raw_devices = [raw for raw in raw_devices if isinstance(raw, dict)]
         except UnauthenticatedError:
             raise
         except Exception as err:
@@ -414,8 +430,15 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         ]
         if cache != self._device_cache:
             self._device_cache = cache
-            self._store.async_delay_save(lambda: {"devices": cache}, 1)
+            self._device_cache_dirty = True
+            self._store.async_delay_save(self._device_cache_data, 1)
         return raw_devices
+
+    @callback
+    def _device_cache_data(self) -> dict[str, Any]:
+        """Return the device cache to save."""
+        self._device_cache_dirty = False
+        return {"devices": self._device_cache or []}
 
     def mqtt_last_seen(self, device: OasisDevice) -> datetime | None:
         """Return when the device last published over MQTT, if recently enough.
@@ -450,6 +473,12 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
             responding = self.device_responding(device)
             if self._responding.get(serial) != responding:
                 self._responding[serial] = responding
+                changed = True
+            # Expiring MQTT freshness changes what the connection and remote access
+            # sensors show, even while the device still responds over another way
+            mqtt_fresh = self.mqtt_last_seen(device) is not None
+            if self._mqtt_fresh.get(serial) != mqtt_fresh:
+                self._mqtt_fresh[serial] = mqtt_fresh
                 changed = True
             if (
                 device.last_updated is None
@@ -647,14 +676,25 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         """Poll a device's local HTTP API and switch transports as it comes and goes."""
         was_connected = False
         logged_unavailable = False
+        # Host the full sync (which checks the device's identity) last succeeded on
+        synced_host: str | None = None
         while True:
             refresh.clear()
             try:
-                if was_connected:
+                if (
+                    was_connected
+                    and synced_host == client.host
+                    and device.is_initialized
+                ):
                     await client.async_get_status(device)
                 else:
+                    # Until the device is identified, and after its address changes,
+                    # fetch everything, including the identity check
+                    host = client.host
                     await client.async_get_all(device)
+                    synced_host = host
             except Exception as err:  # noqa: BLE001
+                synced_host = None
                 if was_connected:
                     _LOGGER.info(
                         "Local HTTP lost for Oasis device %s: %s",
@@ -767,8 +807,8 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
                 or not client.is_connected
                 or client.address in self._ble_polling
                 # Legacy firmware has no GETSTATUS over BLE, but may still need its
-                # identity fetched
-                or (client.legacy_firmware and device.is_initialized)
+                # full sync retried
+                or (client.legacy_firmware and client.synced)
             ):
                 continue
             self._ble_polling.add(client.address)
@@ -783,11 +823,11 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
     ) -> None:
         """Request a device's status over BLE, logging rather than raising errors.
 
-        Until the device is initialized (a reply to the initial sync was missed),
-        the full sync is retried instead, over the same connection.
+        Until a full sync has completed over this connection (e.g. a reply to the
+        identity or playlist requests was missed), the full sync is retried instead.
         """
         try:
-            if device.is_initialized:
+            if client.synced:
                 await client.async_get_status(device)
             else:
                 await client.async_get_all(device)
@@ -820,7 +860,7 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         """Probe ignored BLE devices again once they are added to the account."""
         if not self._ble_ignored:
             return
-        serials = {d.serial_number for d in self.data or []}
+        serials = {d.serial_number for d in self.data or []} - self._removed_serials
         for address, serial in list(self._ble_ignored.items()):
             if serial in serials:
                 del self._ble_ignored[address]
@@ -1021,6 +1061,10 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
     async def async_close(self) -> None:
         """Close client connections."""
         self._shutting_down = True
+        if self._device_cache_dirty:
+            # Written now, so a delayed save can't recreate it after the entry (and
+            # its cache) is removed
+            await self._store.async_save(self._device_cache_data())
         for serial in list(self._http_tasks):
             self._async_stop_http(serial)
         for task in self._ble_reconnect_tasks.values():
