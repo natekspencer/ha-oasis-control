@@ -227,6 +227,8 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
                         self._initialized_serials.discard(serial)
                         self._cloud_ips.pop(serial, None)
                         self._async_stop_http(serial)
+                        # Reprobed by _async_ble_reprobe_ignored if it's added back
+                        await self._async_release_ble(serial, self._ble_ignored)
                         _LOGGER.info(
                             "Oasis device %s removed from account; cleaning up in HA",
                             serial,
@@ -289,6 +291,7 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         except UpdateFailed:
             raise
         except Exception as ex:
+            self._async_discard_new_devices(devices)
             if not self.data:
                 raise UpdateFailed("Unexpected error updating Oasis devices") from ex
             _LOGGER.warning(
@@ -300,6 +303,20 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
             self.last_updated = dt_util.now()
 
         return devices
+
+    @callback
+    def _async_discard_new_devices(self, devices: list[OasisDevice]) -> None:
+        """Stop HTTP polling for devices assembled by a refresh that is discarded.
+
+        A failed refresh keeps the previous data, so device objects it created are
+        dropped; their polling tasks would otherwise keep updating those orphans.
+        Devices retained from the previous data keep polling.
+        """
+        retained = {d.serial_number: d for d in self.data or []}
+        for device in devices:
+            if (serial := device.serial_number) and retained.get(serial) is not device:
+                self._cloud_ips.pop(serial, None)
+                self._async_stop_http(serial)
 
     async def async_load_device_cache(self) -> None:
         """Load the device list cached from the last successful cloud refresh."""
@@ -393,16 +410,31 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
             return
 
         _LOGGER.info("Bluetooth turned off for Oasis device %s", serial)
+        await self._async_release_ble(serial, self._ble_disabled, device)
+
+    async def _async_release_ble(
+        self,
+        serial: str,
+        skip: dict[str, str],
+        device: OasisDevice | None = None,
+    ) -> None:
+        """Disconnect a device's BLE clients and stop reconnecting them.
+
+        The released addresses are recorded in `skip` (address => serial) so their
+        advertisements aren't probed again; other devices' clients are untouched.
+        When `device` is given, it's switched to its next transport first.
+        """
         closing: list[OasisBleClient] = []
         for address, client in list(self.ble_clients.items()):
             if client.serial_number != serial:
                 continue
             del self.ble_clients[address]
-            self._ble_disabled[address] = serial
+            skip[address] = serial
             if task := self._ble_reconnect_tasks.pop(address, None):
                 task.cancel()
             closing.append(client)
-        self._async_select_client(device)
+        if device is not None:
+            self._async_select_client(device)
         for client in closing:
             await client.async_close()
 
@@ -666,11 +698,16 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
                 raise BleakError("No response to GETID")
 
         try:
-            if not await self._async_ble_retry(address, _async_identify):
-                await client.async_close()
-                return
+            identified = await self._async_ble_retry(address, _async_identify)
+        except asyncio.CancelledError:
+            # Not yet owned by ble_clients, so nothing else will disconnect it
+            await client.async_close()
+            raise
         finally:
             self._ble_probing.discard(address)
+        if not identified:
+            await client.async_close()
+            return
         serial = client.serial_number
         assert serial is not None
 

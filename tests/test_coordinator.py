@@ -140,3 +140,74 @@ async def test_ble_poll_does_not_overlap(
     await hass.async_block_till_done()
 
     assert client.async_get_status.await_count == 2
+
+
+async def test_removed_device_releases_bluetooth(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_cloud_client: MagicMock,
+) -> None:
+    """A device removed from the account has its BLE connection closed."""
+    coordinator = init_integration.runtime_data
+    client = _ble_client()
+    client.async_close = AsyncMock()
+    coordinator.ble_clients[client.address] = client
+    other = _ble_client(address="BB:BB:BB:BB:BB:BB", serial_number="OM-OTHER")
+    other.async_close = AsyncMock()
+    coordinator.ble_clients[other.address] = other
+
+    mock_cloud_client.async_get_devices.return_value = []
+    await coordinator.async_refresh()
+
+    client.async_close.assert_awaited_once()
+    assert coordinator.ble_clients == {other.address: other}
+    other.async_close.assert_not_awaited()
+    assert coordinator._ble_ignored == {client.address: SERIAL_NUMBER}
+
+
+async def test_failed_refresh_stops_polling_discarded_devices(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_cloud_client: MagicMock,
+    mock_mqtt_client: MagicMock,
+) -> None:
+    """Devices from a refresh that fails aren't left polling over HTTP."""
+    coordinator = init_integration.runtime_data
+    mock_cloud_client.async_get_devices.return_value = [
+        *mock_cloud_client.async_get_devices.return_value,
+        {"serial_number": "OM-NEW", "ip": "10.0.0.8", "model": {"name": "Oasis"}},
+    ]
+    mock_mqtt_client.register_devices.side_effect = RuntimeError("boom")
+
+    with patch.object(coordinator, "_async_http_poll"):
+        await coordinator.async_refresh()
+
+    assert [d.serial_number for d in coordinator.data] == [SERIAL_NUMBER]
+    assert "OM-NEW" not in coordinator.http_clients
+
+
+async def test_cancelled_ble_probe_closes_client(
+    hass: HomeAssistant, init_integration: MockConfigEntry
+) -> None:
+    """Cancelling a probe before the device is identified disconnects it."""
+    coordinator = init_integration.runtime_data
+    client = _ble_client(serial_number=None)
+    client.async_close = AsyncMock()
+
+    with (
+        patch(
+            "custom_components.oasis_mini.coordinator.OasisBleClient",
+            return_value=client,
+        ),
+        patch.object(
+            coordinator,
+            "_async_ble_retry",
+            AsyncMock(side_effect=asyncio.CancelledError),
+        ),
+        patch("homeassistant.components.bluetooth.async_ble_device_from_address"),
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await coordinator._async_probe_ble(client.address)
+
+    client.async_close.assert_awaited_once()
+    assert client.address not in coordinator.ble_clients

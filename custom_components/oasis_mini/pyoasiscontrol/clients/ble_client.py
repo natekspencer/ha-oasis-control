@@ -108,11 +108,15 @@ class OasisBleClient(OasisClientProtocol):
         self._write_lock = asyncio.Lock()
         self._last_write = 0.0
         self._closing = False
+        # Bumped by async_close so a connection completing afterwards is dropped
+        self._close_count = 0
 
         self._waiters: dict[str, list[asyncio.Future[dict[str, Any]]]] = {}
         self._rx_buffer = ""
         self._playlist: dict[int, int] = {}
         self._playlist_done: asyncio.Event = asyncio.Event()
+        # One playlist transfer at a time, so they can't take each other's completion
+        self._playlist_lock = asyncio.Lock()
 
         self.serial_number: str | None = None
         self.legacy_firmware = False
@@ -155,6 +159,7 @@ class OasisBleClient(OasisClientProtocol):
                 raise BleakError(f"Oasis device {self.address} not found")
 
             self._closing = False
+            close_count = self._close_count
             _LOGGER.debug("Connecting to Oasis BLE device %s", self.address)
             client = await establish_connection(
                 BleakClientWithServiceCache,
@@ -167,7 +172,11 @@ class OasisBleClient(OasisClientProtocol):
                 await client.start_notify(
                     OASIS_CHARACTERISTIC_UUID, self._handle_notification
                 )
-            except Exception:
+                if self._close_count != close_count:
+                    raise BleakError(f"Oasis device {self.address} was closed")
+            except BaseException:
+                # Includes cancellation, so a half-made connection is never left up
+                self._closing = True
                 await client.disconnect()
                 raise
 
@@ -178,8 +187,9 @@ class OasisBleClient(OasisClientProtocol):
     async def async_close(self) -> None:
         """Disconnect from the device."""
         self._closing = True
+        self._close_count += 1
         client, self._client = self._client, None
-        self._fail_waiters()
+        self._fail_waiters(BleakError(f"Oasis device {self.address} was closed"))
         if client is not None and client.is_connected:
             try:
                 await client.disconnect()
@@ -189,19 +199,19 @@ class OasisBleClient(OasisClientProtocol):
     def _handle_disconnect(self, _client: BleakClient) -> None:
         """Handle an unexpected disconnect from the device."""
         self._client = None
-        self._fail_waiters()
+        self._fail_waiters(BleakError(f"Oasis device {self.address} disconnected"))
         if self._closing:
             return
         _LOGGER.info("Disconnected from Oasis BLE device %s", self.address)
         if self._on_disconnect:
             self._on_disconnect()
 
-    def _fail_waiters(self) -> None:
-        """Cancel all pending response waiters."""
+    def _fail_waiters(self, err: BleakError) -> None:
+        """Fail all pending response waiters with the given error."""
         for futures in self._waiters.values():
             for future in futures:
                 if not future.done():
-                    future.cancel()
+                    future.set_exception(err)
         self._waiters.clear()
 
     # ------------------------------------------------------------------ #
@@ -254,7 +264,7 @@ class OasisBleClient(OasisClientProtocol):
             try:
                 async with asyncio.timeout(timeout):
                     return await future
-            except (TimeoutError, asyncio.CancelledError):
+            except TimeoutError:
                 _LOGGER.debug("No BLE response for %s from %s", response, self.address)
                 return None
         finally:
@@ -402,6 +412,8 @@ class OasisBleClient(OasisClientProtocol):
                     for _, track_id in sorted(self._playlist.items())
                     if track_id
                 ]
+                # An empty transfer must not republish this one's entries
+                self._playlist = {}
                 self._playlist_done.set()
 
         if data and self._device is not None:
@@ -460,13 +472,15 @@ class OasisBleClient(OasisClientProtocol):
         self, payload: dict[str, Any], timeout: float
     ) -> None:
         """Send a command and wait for the device to push its full playlist back."""
-        self._playlist_done.clear()
-        await self._async_send(payload)
-        try:
-            async with asyncio.timeout(timeout):
-                await self._playlist_done.wait()
-        except TimeoutError:
-            _LOGGER.debug("Timed out syncing playlist from %s", self.address)
+        async with self._playlist_lock:
+            self._playlist = {}
+            self._playlist_done.clear()
+            await self._async_send(payload)
+            try:
+                async with asyncio.timeout(timeout):
+                    await self._playlist_done.wait()
+            except TimeoutError:
+                _LOGGER.debug("Timed out syncing playlist from %s", self.address)
 
     # ------------------------------------------------------------------ #
     # Commands

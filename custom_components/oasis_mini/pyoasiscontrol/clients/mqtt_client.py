@@ -264,8 +264,13 @@ class OasisMqttClient(OasisClientProtocol):
         self._subscribed_serials.clear()
         for serial, device in self._devices.items():
             await self._subscribe_serial(serial)
-            # Devices attached to another transport (e.g. BLE) refresh themselves
-            if device.client is self and not device.is_sleeping:
+            # Devices attached to another transport (e.g. BLE) refresh themselves,
+            # except over legacy BLE firmware, which only reports identity and Wi-Fi
+            # state and relies on MQTT for everything else
+            if (
+                device.client is self
+                or getattr(device.client, "legacy_firmware", False)
+            ) and not device.is_sleeping:
                 await self.async_get_all(device)
 
     def start(

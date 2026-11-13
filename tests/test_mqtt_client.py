@@ -6,7 +6,7 @@ import asyncio
 from collections.abc import AsyncIterator
 import logging
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import aiomqtt
 from paho.mqtt.packettypes import PacketTypes
@@ -261,3 +261,22 @@ async def test_retry_now_skips_backoff(
         "Disconnected from broker, retrying in 4.0s",
         "Disconnected from broker, retrying in 8.0s",
     ]
+
+
+@pytest.mark.parametrize(("legacy", "refreshed"), [(True, True), (False, False)])
+async def test_resubscribe_refreshes_legacy_ble_devices(
+    mqtt_client: OasisMqttClient,
+    device: OasisDevice,
+    legacy: bool,
+    refreshed: bool,
+) -> None:
+    """Legacy BLE firmware relies on MQTT for status, so it's refreshed on reconnect."""
+    device.attach_client(MagicMock(legacy_firmware=legacy))
+    mqtt_client._client.subscribe.return_value = [0]
+
+    await mqtt_client._resubscribe_all()
+
+    assert (
+        call(f"{SERIAL}/COMMAND/CTL", b"GETALL=", qos=1)
+        in mqtt_client._client.publish.mock_calls
+    ) is refreshed

@@ -78,7 +78,9 @@ async def test_bluetooth_switch_added_before_initialized(
 ) -> None:
     """The switch exists for a device that hasn't been reached yet."""
     assert not init_integration.runtime_data.data[0].is_initialized
-    assert hass.states.get(bluetooth_entity_id(hass))
+    state = hass.states.get(bluetooth_entity_id(hass))
+    assert state
+    assert state.state == STATE_ON
     # Other switches wait until the device is identified
     assert not er.async_get(hass).async_get_entity_id(
         SWITCH_DOMAIN, "oasis_mini", f"{SERIAL_NUMBER}-auto_clean"

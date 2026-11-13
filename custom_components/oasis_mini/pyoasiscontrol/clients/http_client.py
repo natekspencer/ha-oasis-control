@@ -373,7 +373,7 @@ class OasisHttpClient(OasisClientProtocol):
             return
 
         _LOGGER.debug("Status for %s: %s", device.serial_number, raw_status)
-        device.update_from_status_string(raw_status)
+        device.update_from_status_string(raw_status, source=self)
 
     async def async_get_all(self, device: OasisDevice) -> None:
         """

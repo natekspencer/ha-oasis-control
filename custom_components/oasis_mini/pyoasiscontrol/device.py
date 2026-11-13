@@ -358,7 +358,9 @@ class OasisDevice:
 
         return status
 
-    def update_from_status_string(self, raw_status: str) -> None:
+    def update_from_status_string(
+        self, raw_status: str, source: OasisClientProtocol | None = None
+    ) -> None:
         """
         Parse a semicolon-separated device status string and apply the resulting fields to the device state.
 
@@ -366,9 +368,10 @@ class OasisDevice:
 
         Parameters:
             raw_status (str): Raw status payload received from the device (semicolon-separated fields).
+            source (OasisClientProtocol | None): Transport the status came from; see update_from_status_dict.
         """
         if status := self.parse_status_string(raw_status):
-            self.update_from_status_dict(status)
+            self.update_from_status_dict(status, source=source)
 
     def as_dict(self) -> dict[str, Any]:
         """

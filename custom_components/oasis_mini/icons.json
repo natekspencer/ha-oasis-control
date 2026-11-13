@@ -13,7 +13,8 @@
         "default": "mdi:lan-disconnect",
         "state": {
           "bluetooth": "mdi:bluetooth-connect",
-          "cloud": "mdi:cloud-check-outline"
+          "cloud": "mdi:cloud-check-outline",
+          "local": "mdi:lan-connect"
         }
       },
       "download_progress": {

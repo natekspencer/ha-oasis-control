@@ -203,3 +203,99 @@ async def test_command_not_supported(
     await client.async_send_play_command(device)
 
     assert "does not support BLE command CMDPLAY" in caplog.text
+
+
+def test_empty_playlist_transfer_not_stale(
+    client: OasisBleClient, device: OasisDevice
+) -> None:
+    """A transfer with no entries reports an empty playlist, not the last one."""
+    for message in _playlist_push("GETPLAYLIST_PUSH", [101, 102]):
+        _notify(client, message)
+    assert device.playlist == [101, 102]
+
+    _notify(client, {"command": "GETPLAYLIST_PUSH", "part": "end"})
+
+    assert device.playlist == []
+
+
+async def test_concurrent_playlist_writes_serialized(
+    client: OasisBleClient, device: OasisDevice, responses: dict[str, Responder]
+) -> None:
+    """A second playlist write waits for the first to complete."""
+    pushes: list[list[int]] = []
+    responses["WRIJOBLIST"] = lambda payload: (
+        pushes.append([int(t) for t in payload["value"].split(",")]) or []
+    )
+
+    first = asyncio.create_task(client.async_send_set_playlist_command(device, [1]))
+    second = asyncio.create_task(client.async_send_set_playlist_command(device, [2]))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    # Only the first write is sent until the device pushes its playlist back
+    assert pushes == [[1]]
+
+    for message in _playlist_push("GETPLAYLIST_PUSH", [1]):
+        _notify(client, message)
+    await first
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert pushes == [[1], [2]]
+    assert not second.done()
+
+    for message in _playlist_push("GETPLAYLIST_PUSH", [2]):
+        _notify(client, message)
+    await second
+    assert device.playlist == [2]
+
+
+async def test_disconnect_fails_pending_reply(client: OasisBleClient) -> None:
+    """A disconnect while waiting for a reply raises instead of returning nothing."""
+    task = asyncio.create_task(client.async_get_status(client._device))
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    client._handle_disconnect(MagicMock())
+
+    with pytest.raises(ble_client.BleakError):
+        await task
+
+
+async def test_cancel_while_waiting_for_reply(client: OasisBleClient) -> None:
+    """Cancelling a command waiting for its reply cancels it, not a silent None."""
+    task = asyncio.create_task(client.async_get_status(client._device))
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_connection_completing_after_close_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connection that finishes after async_close is disconnected, not kept."""
+    connected = asyncio.Event()
+    proceed = asyncio.Event()
+    connection = MagicMock(is_connected=True)
+    connection.start_notify = AsyncMock()
+    connection.disconnect = AsyncMock()
+
+    async def _establish(*_args: object, **_kwargs: object) -> MagicMock:
+        connected.set()
+        await proceed.wait()
+        return connection
+
+    monkeypatch.setattr(ble_client, "establish_connection", _establish)
+    client = OasisBleClient(ADDRESS, lambda: MagicMock())
+
+    task = asyncio.create_task(client.async_connect())
+    await connected.wait()
+    await client.async_close()
+    proceed.set()
+
+    with pytest.raises(ble_client.BleakError):
+        await task
+    connection.disconnect.assert_awaited_once()
+    assert not client.is_connected
