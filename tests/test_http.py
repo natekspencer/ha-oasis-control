@@ -356,3 +356,47 @@ async def test_slow_fallback_sync_does_not_block_http_retry(
     await poll(hass, coordinator)
     assert isinstance(device.client, OasisHttpClient)
     stuck.set()
+
+
+async def test_http_takeover_applies_owned_fields(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    init_integration: MockConfigEntry,
+) -> None:
+    """When HTTP takes over from BLE, its snapshot is applied in full right away."""
+    mock_device_offline(aioclient_mock)
+    coordinator = await setup(hass, init_integration)
+    device = coordinator.data[0]
+    ble = MagicMock(spec=OasisBleClient)
+    ble.serial_number = SERIAL_NUMBER
+    ble.is_connected = True
+    ble.status_fields = frozenset({"playlist", "playlist_index", "progress"})
+    coordinator.ble_clients["AA:BB:CC:DD:EE:FF"] = ble
+    device.attach_client(ble)
+    device.update_from_status_dict({"playlist": [301]}, source=ble)
+
+    mock_device(aioclient_mock)
+    await poll(hass, coordinator)
+
+    assert isinstance(device.client, OasisHttpClient)
+    assert device.playlist == [101, 102]
+
+
+async def test_mac_kept_when_schedule_fails(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    init_integration: MockConfigEntry,
+) -> None:
+    """A MAC address fetched over HTTP is kept even if the schedule request fails."""
+    replies = {"GETSTATUS": STATUS, "GETMAC": f"{MAC}\n"}
+
+    async def _reply(method: str, url: URL, data: Any) -> AiohttpClientMockResponse:
+        if (query := next(iter(url.query))) not in replies:
+            raise ClientError("schedule unavailable")
+        return AiohttpClientMockResponse(method, url, text=replies[query], headers=TEXT)
+
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(BASE_URL, side_effect=_reply)
+    coordinator = await setup(hass, init_integration)
+
+    assert coordinator.data[0].mac_address == MAC

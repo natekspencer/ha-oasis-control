@@ -10,7 +10,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from custom_components.oasis_mini.pyoasiscontrol import OasisDevice
+from custom_components.oasis_mini.pyoasiscontrol import (
+    CommandRejectedError,
+    OasisDevice,
+)
 from custom_components.oasis_mini.pyoasiscontrol.clients import ble_client
 from custom_components.oasis_mini.pyoasiscontrol.clients.ble_client import (
     OasisBleClient,
@@ -433,3 +436,15 @@ def test_remote_access_from_wifi_status(
     _notify(client, {"command": "WIFISTATUS_PUSH", "status": "1", "mqtt": mqtt})
 
     assert device.remote_access == remote_access
+
+
+async def test_rejected_command_raises(
+    client: OasisBleClient, device: OasisDevice, responses: dict[str, Responder]
+) -> None:
+    """An explicit rejection raises, so dependent commands don't run."""
+    responses["CMDSTOP"] = lambda _: [{"command": "CMDSTOP", "status": "0"}]
+
+    with pytest.raises(CommandRejectedError, match="CMDSTOP"):
+        await device.async_set_playlist([7, 8])
+
+    assert [c["command"] for c in _written(client)] == ["CMDSTOP"]

@@ -79,9 +79,9 @@ class OasisMqttClient(OasisClientProtocol):
         self._initialized_events: dict[str, asyncio.Event] = {}
         self._mac_events: dict[str, asyncio.Event] = {}
 
-        # Devices that have published since the current broker connection; the
-        # broker connection alone doesn't mean a device is reachable through it
-        self._seen_serials: set[str] = set()
+        # When each device last published during the current broker connection;
+        # the broker connection alone doesn't mean a device is reachable through it
+        self._last_seen: dict[str, datetime] = {}
 
         # Subscription bookkeeping
         self._subscribed_serials: set[str] = set()
@@ -115,13 +115,16 @@ class OasisMqttClient(OasisClientProtocol):
         """Return `True` if the MQTT client is currently connected."""
         return self._connected_event.is_set()
 
-    def is_device_reachable(self, device: OasisDevice) -> bool:
-        """Return `True` if the device has published since the broker connected.
+    def last_seen(self, device: OasisDevice) -> datetime | None:
+        """Return when the device last published over the current broker connection.
 
         A device whose own cloud connection is down ("Remote access inactive" in
-        the app) never publishes, even while the broker connection is up.
+        the app) never publishes, even while the broker connection is up. Callers
+        decide how recent a message must be for the device to count as reachable.
         """
-        return self.is_connected and device.serial_number in self._seen_serials
+        if not self.is_connected or not device.serial_number:
+            return None
+        return self._last_seen.get(device.serial_number)
 
     def add_connection_listener(
         self, listener: Callable[[], None]
@@ -799,7 +802,7 @@ class OasisMqttClient(OasisClientProtocol):
                 ) as client:
                     self._client = client
                     failures = 0
-                    self._seen_serials.clear()
+                    self._last_seen.clear()
                     self._connected_event.set()
                     self._connected_at = datetime.now(UTC)
                     _LOGGER.info("Connected to MQTT broker")
@@ -975,10 +978,11 @@ class OasisMqttClient(OasisClientProtocol):
         if data:
             device.update_from_status_dict(data, source=self)
 
-        if serial not in self._seen_serials:
+        first_seen = serial not in self._last_seen
+        self._last_seen[serial] = datetime.now(UTC)
+        if first_seen:
             # The device is reachable through the broker; let listeners know even if
             # this message changed nothing
-            self._seen_serials.add(serial)
             self._notify_connection_listeners()
 
         is_initialized_event = self._initialized_events.setdefault(

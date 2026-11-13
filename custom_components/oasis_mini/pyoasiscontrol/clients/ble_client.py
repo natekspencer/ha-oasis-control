@@ -16,7 +16,8 @@ from bleak.exc import BleakError
 from bleak_retry_connector import BleakClientWithServiceCache, establish_connection
 
 from ..device import OasisDevice
-from ..utils import _bit_to_bool, _parse_int
+from ..exceptions import CommandRejectedError
+from ..utils import _bit_to_bool, _parse_int, now
 from .transport import OasisClientProtocol
 
 _LOGGER = logging.getLogger(__name__)
@@ -61,7 +62,14 @@ _GETSTATUS_FIELDS: Final[dict[str, tuple[str, Callable[[Any], Any]]]] = {
 
 # Device fields reported by every firmware (identity and Wi-Fi state)
 _BASE_FIELDS: Final = frozenset(
-    {"mac_address", "software_version", "wifi_ip", "wifi_connected", "remote_access"}
+    {
+        "mac_address",
+        "software_version",
+        "wifi_ip",
+        "wifi_connected",
+        "remote_access",
+        "remote_access_updated",
+    }
 )
 # Device fields reported by firmware that supports GETSTATUS/GETPLAYLIST over BLE
 _STATUS_FIELDS: Final = _BASE_FIELDS | frozenset(
@@ -310,7 +318,12 @@ class OasisBleClient(OasisClientProtocol):
         """
         Send a command and wait for the device's acknowledgement.
 
-        A missing acknowledgement is logged rather than raised, matching the app's behaviour.
+        A missing acknowledgement is logged rather than raised, matching the app's
+        behaviour, but an explicit rejection raises so dependent commands (e.g.
+        replacing the playlist after stopping) don't run.
+
+        Raises:
+            CommandRejectedError: If the device rejects the command.
         """
         reply = await self._async_send({"command": command, **fields}, command)
         if reply is None:
@@ -322,11 +335,9 @@ class OasisBleClient(OasisClientProtocol):
                 command,
             )
         elif _has_value(status := reply.get("status")) and str(status) != "1":
-            _LOGGER.warning(
-                "Oasis %s rejected BLE command %s: %s",
-                self.serial_number or self.address,
-                command,
-                reply,
+            raise CommandRejectedError(
+                f"Oasis {self.serial_number or self.address} rejected BLE command "
+                f"{command}: {reply}"
             )
 
     def _handle_notification(
@@ -409,6 +420,7 @@ class OasisBleClient(OasisClientProtocol):
             if _has_value(msg.get("mqtt")):
                 if remote_access := _REMOTE_ACCESS.get(str(msg["mqtt"])):
                     data["remote_access"] = remote_access
+                    data["remote_access_updated"] = now()
                 mqtt_connected = _bit_to_bool(str(msg["mqtt"]))
                 if mqtt_connected != self.mqtt_connected:
                     _LOGGER.info(

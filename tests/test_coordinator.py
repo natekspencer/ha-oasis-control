@@ -328,3 +328,47 @@ async def test_probe_completing_during_shutdown_not_kept(
 
     client.async_close.assert_awaited_once()
     assert coordinator.ble_clients == {}
+
+
+async def test_failed_refresh_drops_removed_devices(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_cloud_client: MagicMock,
+    mock_mqtt_client: MagicMock,
+) -> None:
+    """A device removed before a refresh fails isn't kept with released transports."""
+    coordinator = init_integration.runtime_data
+    mock_cloud_client.async_get_devices.return_value = [
+        {"serial_number": "OM-NEW", "model": {"name": "Oasis"}}
+    ]
+    mock_mqtt_client.register_devices.side_effect = RuntimeError("boom")
+
+    await coordinator.async_refresh()
+
+    assert coordinator.last_update_success
+    assert coordinator.data == []
+
+
+@pytest.mark.parametrize("device_status", [{}])
+async def test_rejected_token_discards_new_devices(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_cloud_client: MagicMock,
+    mock_mqtt_client: MagicMock,
+) -> None:
+    """Devices created by a refresh that hits an auth error are cleaned up."""
+    coordinator = init_integration.runtime_data
+    mock_cloud_client.async_get_devices.return_value = [
+        *mock_cloud_client.async_get_devices.return_value,
+        {"serial_number": "OM-NEW", "ip": "10.0.0.8", "model": {"name": "Oasis"}},
+    ]
+    mock_cloud_client.async_get_playlists.side_effect = UnauthenticatedError()
+
+    with patch.object(coordinator, "_async_http_poll"):
+        await coordinator.async_refresh()
+    await hass.async_block_till_done()
+
+    assert "OM-NEW" not in coordinator.http_clients
+    (unregistered,) = mock_mqtt_client.unregister_device.call_args.args
+    assert unregistered.serial_number == "OM-NEW"
+    assert list(init_integration.async_get_active_flows(hass, {SOURCE_REAUTH}))

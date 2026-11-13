@@ -47,6 +47,8 @@ class OasisHttpClient(OasisClientProtocol):
         self._owns_session: bool = session is None
         self._on_command = on_command
         self._connected = False
+        # The last valid status the device reported
+        self.last_status: dict[str, Any] | None = None
 
     @property
     def is_connected(self) -> bool:
@@ -382,6 +384,7 @@ class OasisHttpClient(OasisClientProtocol):
 
         _LOGGER.debug("Status for %s: %s", device.serial_number, raw_status)
         self._connected = True
+        self.last_status = status
         device.update_from_status_dict(status, source=self)
 
     async def async_get_all(self, device: OasisDevice) -> None:
@@ -392,13 +395,13 @@ class OasisHttpClient(OasisClientProtocol):
         doesn't include it and the device isn't considered initialized without it.
         """
         await self.async_get_status(device)
-        data: dict[str, Any] = {}
         if not device.mac_address:
             mac = await self._async_get(params={"GETMAC": ""})
             if isinstance(mac, str) and mac.strip():
-                data["mac_address"] = mac.strip()
+                # Applied right away, so a failure fetching the schedule can't lose it
+                device.update_from_status_dict(
+                    {"mac_address": mac.strip()}, source=self
+                )
         schedule = await self._async_get(params={"GETSCH": ""})
         if isinstance(schedule, str):
-            data["schedule"] = schedule
-        if data:
-            device.update_from_status_dict(data, source=self)
+            device.update_from_status_dict({"schedule": schedule}, source=self)

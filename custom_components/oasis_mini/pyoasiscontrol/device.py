@@ -139,8 +139,10 @@ class OasisDevice:
         self.environment: str | None = None
         self.schedule: Any | None = None
         # The device's own cloud connection ("Remote access" in the app) as last
-        # reported over BLE: "active", "inactive" or "disabled" (by Grounded)
+        # reported over BLE: "active", "inactive" or "disabled" (by Grounded), and
+        # when it was reported
         self.remote_access: str | None = None
+        self.remote_access_updated: datetime | None = None
 
         # Track metadata cache
         self._track: dict | None = None

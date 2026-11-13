@@ -210,6 +210,7 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
             UpdateFailed: If the cloud can't be reached and no device list is cached.
         """
         devices: list[OasisDevice] = []
+        removed_serials: set[str] = set()
 
         try:
             raw_devices = await self._async_fetch_devices()
@@ -309,17 +310,23 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
                         )
 
         except UnauthenticatedError as ex:
+            self._async_discard_new_devices(devices)
             raise ConfigEntryAuthFailed(ex) from ex
         except UpdateFailed:
             raise
         except Exception as ex:
             published = self._async_discard_new_devices(devices)
+            # Devices removed from the account had their transports released
+            # before the failure, so they aren't kept
+            kept = [
+                d for d in self.data or [] if d.serial_number not in removed_serials
+            ]
             if not self.data and not published:
                 raise UpdateFailed("Unexpected error updating Oasis devices") from ex
             _LOGGER.warning(
                 "Error updating Oasis devices; reusing previous data", exc_info=ex
             )
-            return [*(self.data or []), *published]
+            return [*kept, *published]
 
         if devices != self.data:
             self.last_updated = dt_util.now()
@@ -409,6 +416,17 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
             self._device_cache = cache
             self._store.async_delay_save(lambda: {"devices": cache}, 1)
         return raw_devices
+
+    def mqtt_last_seen(self, device: OasisDevice) -> datetime | None:
+        """Return when the device last published over MQTT, if recently enough.
+
+        Uses the same STALE_AFTER as responsiveness, so a device that went quiet
+        while the broker stayed connected stops counting as reachable over MQTT.
+        """
+        seen = self.mqtt_client.last_seen(device)
+        if seen is None or dt_util.utcnow() - seen >= STALE_AFTER:
+            return None
+        return seen
 
     @staticmethod
     def device_responding(device: OasisDevice) -> bool:
@@ -663,9 +681,15 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
                     )
                 delay: float = HTTP_RETRY_INTERVAL
             else:
+                taking_over = not was_connected
                 was_connected = True
                 logged_unavailable = False
                 self._async_select_client(device)
+                if taking_over and device.client is client and client.last_status:
+                    # The snapshot was applied while another transport (e.g. BLE)
+                    # still owned some fields, which were skipped; apply it in full
+                    # now that HTTP is the active transport
+                    device.update_from_status_dict(client.last_status, source=client)
                 delay = HTTP_POLL_INTERVAL
 
             with contextlib.suppress(TimeoutError):

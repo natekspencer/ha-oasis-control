@@ -130,7 +130,7 @@ class OasisDeviceConnectionSensorEntity(OasisDeviceEntity, SensorEntity):
             return "local"
         if isinstance(client, OasisBleClient) and client.is_connected:
             return "bluetooth"
-        if isinstance(client, OasisMqttClient) and client.is_device_reachable(
+        if isinstance(client, OasisMqttClient) and self.coordinator.mqtt_last_seen(
             self.device
         ):
             return "cloud"
@@ -157,9 +157,12 @@ class OasisDeviceRemoteAccessSensorEntity(OasisDeviceEntity, SensorEntity):
     @property
     def native_value(self) -> str | None:
         """Return the device's remote access state, if known."""
-        # A device publishing over the cloud broker is evidently connected to it
-        if self.coordinator.mqtt_client.is_device_reachable(self.device):
+        # A device publishing over the cloud broker is evidently connected to it,
+        # unless BLE has reported otherwise since
+        seen = self.coordinator.mqtt_last_seen(self.device)
+        reported = self.device.remote_access_updated
+        if seen is not None and (reported is None or seen >= reported):
             return "active"
-        # Otherwise only BLE reports it; a quiet broker alone doesn't prove the
-        # device is offline, so it's unknown without a BLE report
+        # Otherwise BLE's report is used; a quiet broker alone doesn't prove the
+        # device is offline, so it's unknown without one
         return self.device.remote_access
