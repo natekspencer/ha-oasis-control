@@ -141,6 +141,14 @@
       "led_color_id": {
         "name": "LED-färg-ID"
       },
+      "remote_access": {
+        "name": "Fjärråtkomst",
+        "state": {
+          "active": "Aktiv",
+          "inactive": "Inaktiv",
+          "disabled": "Avstängd"
+        }
+      },
       "status": {
         "name": "Status",
         "state": {

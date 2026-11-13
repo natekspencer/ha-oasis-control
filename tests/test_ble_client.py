@@ -420,3 +420,16 @@ async def test_disconnect_during_write_pacing(
     with pytest.raises(ble_client.BleakError):
         await task
     connection.write_gatt_char.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("mqtt", "remote_access"),
+    [("1", "active"), ("0", "inactive"), ("2", "disabled")],
+)
+def test_remote_access_from_wifi_status(
+    client: OasisBleClient, device: OasisDevice, mqtt: str, remote_access: str
+) -> None:
+    """The device's own cloud connection state is read from WIFISTATUS."""
+    _notify(client, {"command": "WIFISTATUS_PUSH", "status": "1", "mqtt": mqtt})
+
+    assert device.remote_access == remote_access

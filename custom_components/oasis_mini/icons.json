@@ -29,6 +29,14 @@
           "0": "mdi:circle-outline"
         }
       },
+      "remote_access": {
+        "default": "mdi:cloud-question-outline",
+        "state": {
+          "active": "mdi:cloud-check-outline",
+          "inactive": "mdi:cloud-off-outline",
+          "disabled": "mdi:cloud-cancel-outline"
+        }
+      },
       "status": {
         "state": {
           "booting": "mdi:loading",

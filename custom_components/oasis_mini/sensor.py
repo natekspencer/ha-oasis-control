@@ -61,6 +61,12 @@ async def async_setup_entry(
             )
             for device in new_devices
         )
+        entities.extend(
+            OasisDeviceRemoteAccessSensorEntity(
+                entry.runtime_data, device, REMOTE_ACCESS_DESCRIPTOR
+            )
+            for device in new_devices
+        )
         return entities
 
     setup_platform_from_coordinator(entry, async_add_entities, make_entities)
@@ -129,3 +135,31 @@ class OasisDeviceConnectionSensorEntity(OasisDeviceEntity, SensorEntity):
         ):
             return "cloud"
         return "disconnected"
+
+
+REMOTE_ACCESS_DESCRIPTOR = SensorEntityDescription(
+    key="remote_access",
+    translation_key="remote_access",
+    device_class=SensorDeviceClass.ENUM,
+    entity_category=EntityCategory.DIAGNOSTIC,
+    entity_registry_enabled_default=False,
+    options=["active", "inactive", "disabled"],
+)
+
+
+class OasisDeviceRemoteAccessSensorEntity(OasisDeviceEntity, SensorEntity):
+    """The device's own cloud connection, shown as "Remote access" in the app.
+
+    Without it, the device can't be reached over the cloud (MQTT). "disabled"
+    means Grounded has turned it off for the device.
+    """
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the device's remote access state, if known."""
+        # A device publishing over the cloud broker is evidently connected to it
+        if self.coordinator.mqtt_client.is_device_reachable(self.device):
+            return "active"
+        # Otherwise only BLE reports it; a quiet broker alone doesn't prove the
+        # device is offline, so it's unknown without a BLE report
+        return self.device.remote_access

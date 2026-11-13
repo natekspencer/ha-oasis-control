@@ -141,6 +141,14 @@
       "led_color_id": {
         "name": "LED color ID"
       },
+      "remote_access": {
+        "name": "Remote access",
+        "state": {
+          "active": "Active",
+          "inactive": "Inactive",
+          "disabled": "Disabled"
+        }
+      },
       "status": {
         "name": "Status",
         "state": {

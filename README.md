@@ -94,6 +94,8 @@ The table accepts a single Bluetooth connection, so while Home Assistant holds i
 
 If the Oasis Control app shows **Remote access inactive**, the table isn't connected to the Oasis cloud and the cloud connection won't receive any updates. Use HTTP mode or Bluetooth instead, or reconnect the table to the cloud by tapping that message in the app and setting up its Wi‑Fi again.
 
+The **Remote access** diagnostic sensor (disabled by default) shows the same state in Home Assistant: `Active`, `Inactive` or `Disabled`. It's read over Bluetooth, or shown as `Active` while the table is reporting through the cloud, and is unknown otherwise.
+
 ## 🎬 Actions
 
 The media player entity supports various actions, including managing the playlist queue. You can specify a track by its ID or name. If using a track name, it must match an entry in the [tracks list](custom_components/oasis_mini/pyoasiscontrol/tracks.json). To specify multiple tracks, separate them with commas. An example is below:

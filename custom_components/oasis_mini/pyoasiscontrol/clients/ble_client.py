@@ -61,13 +61,17 @@ _GETSTATUS_FIELDS: Final[dict[str, tuple[str, Callable[[Any], Any]]]] = {
 
 # Device fields reported by every firmware (identity and Wi-Fi state)
 _BASE_FIELDS: Final = frozenset(
-    {"mac_address", "software_version", "wifi_ip", "wifi_connected"}
+    {"mac_address", "software_version", "wifi_ip", "wifi_connected", "remote_access"}
 )
 # Device fields reported by firmware that supports GETSTATUS/GETPLAYLIST over BLE
 _STATUS_FIELDS: Final = _BASE_FIELDS | frozenset(
     {"status_code", "playlist_index", "progress", "download_progress", "playlist"}
     | {field for field, _ in _GETSTATUS_FIELDS.values()}
 )
+
+
+# WIFISTATUS "mqtt" values => the app's remote access states
+_REMOTE_ACCESS: Final = {"0": "inactive", "1": "active", "2": "disabled"}
 
 
 def _has_value(value: Any) -> bool:
@@ -403,6 +407,8 @@ class OasisBleClient(OasisClientProtocol):
         ):
             data["wifi_connected"] = _bit_to_bool(str(msg["status"]))
             if _has_value(msg.get("mqtt")):
+                if remote_access := _REMOTE_ACCESS.get(str(msg["mqtt"])):
+                    data["remote_access"] = remote_access
                 mqtt_connected = _bit_to_bool(str(msg["mqtt"]))
                 if mqtt_connected != self.mqtt_connected:
                     _LOGGER.info(
