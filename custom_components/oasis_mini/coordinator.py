@@ -14,7 +14,7 @@ from bleak.exc import BleakError
 
 from homeassistant.const import CONF_EMAIL
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.dispatcher import async_dispatcher_send
@@ -54,6 +54,20 @@ def device_cache_store(hass: HomeAssistant, entry_id: str) -> Store[dict[str, An
     return Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry_id}.devices")
 
 
+async def async_save_discovered_host(
+    hass: HomeAssistant, entry_id: str, serial: str, host: str
+) -> None:
+    """Keep an address found (e.g. by DHCP) while the entry isn't loaded.
+
+    The entry applies it at its next setup, since the same sighting isn't
+    reported again.
+    """
+    store = device_cache_store(hass, entry_id)
+    data = await store.async_load() or {}
+    data.setdefault("hosts", {})[serial] = host
+    await store.async_save(data)
+
+
 # BLE connection retry backoff: starts at BLE_RECONNECT_DELAY seconds and doubles
 # up to BLE_RETRY_INTERVAL while Home Assistant can still see the device
 BLE_RETRY_INTERVAL = 60
@@ -68,6 +82,9 @@ HTTP_POLL_INTERVAL = 10
 HTTP_RETRY_INTERVAL = 60
 # Pause after a command before polling, so the reply reflects it
 HTTP_COMMAND_REFRESH_DELAY = 0.5
+# Status polls between full syncs, which recheck the device's identity in case
+# another device starts answering at its address (about every 5 minutes)
+HTTP_IDENTITY_CHECK_POLLS = 30
 
 # Responsiveness: HTTP and BLE poll every 10s, but over MQTT an idle device sends
 # nothing, so a quiet device is asked for its status after PROBE_AFTER; one that
@@ -108,6 +125,8 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         self._store = device_cache_store(hass, config_entry.entry_id)
         self._device_cache: list[dict[str, Any]] | None = None
         self._device_cache_dirty = False
+        # Addresses discovered while the entry wasn't loaded, by serial number
+        self._pending_hosts: dict[str, str] = {}
         self.mqtt_client = OasisMqttClient()
         self.mqtt_client.reachable_for = STALE_AFTER
         config_entry.async_on_unload(
@@ -240,10 +259,19 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
                             name=raw.get("name"),
                             cloud=self.cloud_client,
                         )
+                        # Known before it's reached, so HTTP can check it's talking
+                        # to this device even right after a restart
+                        device.mac_address = self._registered_mac(serial)
                         self._attach_device_listeners(device)
                     if (ip := raw.get("ip")) and self._cloud_ips.get(serial) != ip:
                         self._cloud_ips[serial] = ip
                         self.async_update_host(device, ip, "cloud")
+                    if host := self._pending_hosts.pop(serial, None):
+                        # Found by DHCP while the entry wasn't loaded; newer than
+                        # anything the cloud reported
+                        self.async_update_host(device, host, "DHCP")
+                        self._device_cache_dirty = True
+                        self._store.async_delay_save(self._device_cache_data, 1)
 
                     devices.append(device)
 
@@ -374,10 +402,26 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
             self.mqtt_client.unregister_device(device)
         return published
 
+    def _registered_mac(self, serial: str) -> str | None:
+        """Return the network MAC address registered for a device, if any."""
+        device_entry = dr.async_get(self.hass).async_get_device(
+            identifiers={(DOMAIN, serial)}
+        )
+        return next(
+            (
+                value
+                for kind, value in (device_entry.connections if device_entry else ())
+                if kind == dr.CONNECTION_NETWORK_MAC
+            ),
+            None,
+        )
+
     async def async_load_device_cache(self) -> None:
-        """Load the device list cached from the last successful cloud refresh."""
+        """Load the cached device list, and any addresses discovered meanwhile."""
         if (data := await self._store.async_load()) is not None:
-            self._device_cache = data.get("devices", [])
+            if "devices" in data:
+                self._device_cache = data["devices"]
+            self._pending_hosts = dict(data.get("hosts", {}))
 
     @property
     def has_device_cache(self) -> bool:
@@ -436,9 +480,12 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
 
     @callback
     def _device_cache_data(self) -> dict[str, Any]:
-        """Return the device cache to save."""
+        """Return the device cache, and addresses not yet applied, to save."""
         self._device_cache_dirty = False
-        return {"devices": self._device_cache or []}
+        data: dict[str, Any] = {"devices": self._device_cache or []}
+        if self._pending_hosts:
+            data["hosts"] = self._pending_hosts
+        return data
 
     def mqtt_last_seen(self, device: OasisDevice) -> datetime | None:
         """Return when the device last published over MQTT, if recently enough.
@@ -451,12 +498,31 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
             return None
         return seen
 
-    @staticmethod
-    def device_responding(device: OasisDevice) -> bool:
-        """Return whether the device has been heard from recently, over any transport."""
+    def connection_type(self, device: OasisDevice) -> str:
+        """Return how the device is currently reached.
+
+        One of "local" (HTTP), "bluetooth", "cloud" (MQTT, while the device is
+        publishing over it) or "disconnected".
+        """
+        client = device.client
+        if isinstance(client, OasisHttpClient) and client.is_connected:
+            return "local"
+        if isinstance(client, OasisBleClient) and client.is_connected:
+            return "bluetooth"
+        if client is self.mqtt_client and self.mqtt_last_seen(device):
+            return "cloud"
+        return "disconnected"
+
+    def device_connected(self, device: OasisDevice) -> bool:
+        """Return whether the device is reachable and has been heard from recently.
+
+        Without a working transport it's disconnected right away, even if it was
+        heard from moments ago (e.g. HTTP mode turned off by a restart).
+        """
         return (
             device.last_updated is not None
             and dt_util.utcnow() - device.last_updated < STALE_AFTER
+            and self.connection_type(device) != "disconnected"
         )
 
     @callback
@@ -470,7 +536,7 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         for device in self.data or []:
             if not (serial := device.serial_number):
                 continue
-            responding = self.device_responding(device)
+            responding = self.device_connected(device)
             if self._responding.get(serial) != responding:
                 self._responding[serial] = responding
                 changed = True
@@ -585,6 +651,38 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         for client in closing:
             await client.async_close()
 
+    def bluetooth_connected(self, device: OasisDevice) -> bool:
+        """Return whether Home Assistant has a Bluetooth connection to the device."""
+        return bool(
+            (client := self._ble_client_for(device.serial_number))
+            and client.is_connected
+        )
+
+    async def async_enable_http_mode(self, device: OasisDevice) -> None:
+        """Turn on a device's local HTTP API over Bluetooth, then start using it.
+
+        HTTP mode turns off whenever the device restarts, and can only be turned
+        on over Bluetooth (as the Oasis Control app does).
+
+        Raises:
+            HomeAssistantError: If there's no Bluetooth connection to the device, or
+                it reports HTTP mode still off.
+        """
+        client = self._ble_client_for(device.serial_number)
+        if client is None or not client.is_connected:
+            raise HomeAssistantError(
+                f"Oasis device {device.serial_number} isn't connected over "
+                "Bluetooth, which is needed to enable HTTP mode"
+            )
+        if await client.async_enable_http_mode() is False:
+            raise HomeAssistantError(
+                f"Oasis device {device.serial_number} didn't turn on HTTP mode"
+            )
+        _LOGGER.info("HTTP mode enabled for Oasis device %s", device.serial_number)
+        # Check right away instead of waiting for the next retry
+        if refresh := self._http_refresh.get(device.serial_number or ""):
+            refresh.set()
+
     def _ble_client_for(self, serial: str | None) -> OasisBleClient | None:
         """Return the Bluetooth client identified as the given device, if any."""
         return next(
@@ -676,8 +774,10 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         """Poll a device's local HTTP API and switch transports as it comes and goes."""
         was_connected = False
         logged_unavailable = False
-        # Host the full sync (which checks the device's identity) last succeeded on
+        # Host the full sync (which checks the device's identity) last succeeded on,
+        # and status polls since
         synced_host: str | None = None
+        polls_since_sync = 0
         while True:
             refresh.clear()
             try:
@@ -685,16 +785,20 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
                     was_connected
                     and synced_host == client.host
                     and device.is_initialized
+                    and polls_since_sync < HTTP_IDENTITY_CHECK_POLLS
                 ):
                     await client.async_get_status(device)
+                    polls_since_sync += 1
                 else:
-                    # Until the device is identified, and after its address changes,
-                    # fetch everything, including the identity check
+                    # Until the device is identified, after its address changes, and
+                    # periodically, fetch everything, including the identity check
                     host = client.host
                     await client.async_get_all(device)
                     synced_host = host
+                    polls_since_sync = 0
             except Exception as err:  # noqa: BLE001
                 synced_host = None
+                polls_since_sync = 0
                 if was_connected:
                     _LOGGER.info(
                         "Local HTTP lost for Oasis device %s: %s",
@@ -903,7 +1007,8 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         assert serial is not None
 
         device = next((d for d in self.data or [] if d.serial_number == serial), None)
-        if device is None:
+        # A device being removed is still in the old data until the refresh commits
+        if device is None or serial in self._removed_serials:
             _LOGGER.debug(
                 "Oasis BLE device %s (%s) is not on this account; ignoring",
                 address,
@@ -940,6 +1045,8 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
             )
         client.attach_device(device)
         self._async_select_client(device)
+        # Entities that depend on the Bluetooth link (e.g. Enable HTTP mode) update
+        self.async_update_listeners()
         await self._async_ble_sync(client, device)
 
     async def _async_ble_sync(
@@ -985,6 +1092,7 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         if device.client is client:
             _LOGGER.info("Bluetooth lost for Oasis device %s", device.serial_number)
         self._async_select_client(device)
+        self.async_update_listeners()
 
         if address not in self._ble_reconnect_tasks:
             self._ble_reconnect_tasks[address] = (
@@ -1013,6 +1121,7 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
             "Bluetooth restored for Oasis device %s (%s)", device.serial_number, address
         )
         self._async_select_client(device)
+        self.async_update_listeners()
         await self._async_ble_sync(client, device)
 
     async def _async_ble_retry(

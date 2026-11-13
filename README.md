@@ -68,7 +68,7 @@ The integration talks to each Oasis over the best connection available, in this 
 
 It switches automatically as connections come and go. The **Connection type** diagnostic sensor on each device shows which one is in use (`Local network`, `Bluetooth`, `Cloud` or `Disconnected`).
 
-The **Connection** diagnostic sensor shows whether the table has answered recently over any of these. It turns to `Disconnected` when nothing has been heard from the table for 3 minutes, and only changes state when that happens, so it suits alerts and automations.
+The **Connection** diagnostic sensor shows whether the table is reachable and has answered recently. It turns to `Disconnected` as soon as no connection works (when **Connection type** shows `Disconnected`) or when nothing has been heard from the table for 3 minutes, and only changes state when that happens, so it suits alerts and automations.
 
 If the Oasis cloud is down, tables that were set up before keep working over the local network and Bluetooth, including after a Home Assistant restart. Track images and names that come from the cloud may be missing until it's back.
 
@@ -80,7 +80,9 @@ Newer firmware turns off the table's local HTTP interface by default. To turn it
 2. Open the **Oasis Control** app and go to your device's settings page.
 3. Tap the **serial number** 10 times. The app counts down the last few taps, then enables HTTP mode.
 
-Home Assistant finds the table at the IP address reported by the Oasis cloud and picks up the local connection within a minute. No restart is needed.
+Home Assistant finds the table's IP address (from the Oasis cloud, the table itself, or DHCP discovery) and picks up the local connection within a minute. No restart of Home Assistant is needed.
+
+> ⚠️ **HTTP mode turns off whenever the table restarts** (a power cut, a reboot or a firmware update). Turn it back on in the app as above, or press the table's **Enable HTTP mode** button in Home Assistant (under the device's configuration entities). The button is available while Home Assistant is connected to the table over [Bluetooth](#bluetooth), and switches to the local connection right away.
 
 > 💡 Give the table a DHCP reservation on your router so its IP address doesn't change.
 

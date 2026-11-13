@@ -540,3 +540,90 @@ async def test_known_device_must_confirm_identity(
 
     assert not coordinator.http_clients[SERIAL_NUMBER].is_connected
     assert device.client is mock_mqtt_client
+
+
+async def test_registered_mac_checked_after_restart(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    mock_config_entry: MockConfigEntry,
+    mock_cloud_client: MagicMock,
+    mock_mqtt_client: MagicMock,
+    platforms: list[Platform],
+) -> None:
+    """The MAC from the device registry guards HTTP before the device is reached."""
+    mock_config_entry.add_to_hass(hass)
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=mock_config_entry.entry_id,
+        identifiers={(DOMAIN, SERIAL_NUMBER)},
+        connections={(dr.CONNECTION_NETWORK_MAC, "11:22:33:44:55:66")},
+    )
+    mock_device(aioclient_mock)  # Answers with a different MAC
+    with patch("custom_components.oasis_mini.PLATFORMS", platforms):
+        assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+    coordinator = await setup(hass, mock_config_entry)
+
+    device = coordinator.data[0]
+    assert device.mac_address == "11:22:33:44:55:66"
+    assert not coordinator.http_clients[SERIAL_NUMBER].is_connected
+    assert device.client is mock_mqtt_client
+
+
+async def test_identity_rechecked_periodically(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    init_integration: MockConfigEntry,
+) -> None:
+    """A different device answering at the same address is noticed by a later check."""
+    mock_device(aioclient_mock)
+    with patch("custom_components.oasis_mini.coordinator.HTTP_IDENTITY_CHECK_POLLS", 2):
+        coordinator = await setup(hass, init_integration)
+        device = coordinator.data[0]
+        assert isinstance(device.client, OasisHttpClient)
+
+        # Another table takes over the address
+        mock_device_replies(
+            aioclient_mock,
+            {"GETSTATUS": STATUS, "GETMAC": "11:22:33:44:55:66", "GETSCH": "{}"},
+        )
+        for _ in range(3):
+            await poll(hass, coordinator)
+
+    assert not coordinator.http_clients[SERIAL_NUMBER].is_connected
+    assert not isinstance(device.client, OasisHttpClient)
+
+
+async def test_dhcp_address_kept_until_entry_loads(
+    hass: HomeAssistant,
+    hass_storage: dict[str, Any],
+    aioclient_mock: AiohttpClientMocker,
+    mock_config_entry: MockConfigEntry,
+    mock_cloud_client: MagicMock,
+    mock_mqtt_client: MagicMock,
+    platforms: list[Platform],
+) -> None:
+    """A DHCP sighting while the entry isn't loaded is applied when it's set up."""
+    mock_device_offline(aioclient_mock)
+    mock_config_entry.add_to_hass(hass)
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=mock_config_entry.entry_id,
+        identifiers={(DOMAIN, SERIAL_NUMBER)},
+        connections={(dr.CONNECTION_NETWORK_MAC, dr.format_mac(MAC))},
+    )
+
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN,
+        context={"source": SOURCE_DHCP},
+        data=DhcpServiceInfo(
+            ip=NEW_HOST, hostname="esp32", macaddress=MAC.replace(":", "").lower()
+        ),
+    )
+    assert result["type"] is FlowResultType.ABORT
+
+    with patch("custom_components.oasis_mini.PLATFORMS", platforms):
+        assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    coordinator = mock_config_entry.runtime_data
+    assert coordinator.http_clients[SERIAL_NUMBER].host == NEW_HOST
+    assert coordinator._pending_hosts == {}

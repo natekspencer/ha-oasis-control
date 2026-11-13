@@ -444,3 +444,29 @@ async def test_removed_device_not_reprobed_before_commit(
 
     mock_probe.assert_not_called()
     assert coordinator._ble_ignored == {"AA:AA:AA:AA:AA:AA": SERIAL_NUMBER}
+
+
+async def test_probe_for_device_being_removed_ignored(
+    hass: HomeAssistant, init_integration: MockConfigEntry
+) -> None:
+    """A probe finishing while its device is being removed doesn't keep it."""
+    coordinator = init_integration.runtime_data
+    coordinator._removed_serials.add(SERIAL_NUMBER)
+    client = _ble_client()
+    client.async_close = AsyncMock()
+    client.async_get_serial_number = AsyncMock(return_value=SERIAL_NUMBER)
+
+    with (
+        patch(
+            "custom_components.oasis_mini.coordinator.OasisBleClient",
+            return_value=client,
+        ),
+        patch.object(coordinator, "_async_ble_retry", AsyncMock(return_value=True)),
+        patch("homeassistant.components.bluetooth.async_ble_device_from_address"),
+    ):
+        await coordinator._async_probe_ble(client.address)
+
+    client.async_close.assert_awaited_once()
+    assert coordinator.ble_clients == {}
+    # Reprobed if the device is added back
+    assert coordinator._ble_ignored == {client.address: SERIAL_NUMBER}

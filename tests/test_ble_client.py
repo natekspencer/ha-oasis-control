@@ -539,3 +539,84 @@ async def test_failed_resync_clears_synced(
         await client.async_get_all(device)
 
     assert not client.synced
+
+
+async def test_enable_http_mode(
+    client: OasisBleClient, responses: dict[str, Responder]
+) -> None:
+    """HTTP mode is turned on and confirmed through the Wi-Fi status."""
+    responses["WIFISTATUS"] = lambda _: [
+        {"command": "WIFISTATUS", "status": "1", "http_mode": "1"}
+    ]
+
+    assert await client.async_enable_http_mode() is True
+    assert [c["command"] for c in _written(client)] == ["ENABLEHTTP", "WIFISTATUS"]
+
+
+async def test_enable_http_mode_not_confirmed(
+    client: OasisBleClient, responses: dict[str, Responder]
+) -> None:
+    """A device still reporting HTTP mode off is asked a few times, then reported."""
+    responses["WIFISTATUS"] = lambda _: [
+        {"command": "WIFISTATUS", "status": "1", "http_mode": "0"}
+    ]
+
+    assert await client.async_enable_http_mode() is False
+    assert [c["command"] for c in _written(client)].count("WIFISTATUS") == 3
+
+
+@pytest.mark.parametrize(
+    "messages",
+    [
+        # Entry 1 lost
+        [
+            {
+                "command": "GETPLAYLIST_PUSH",
+                "part": "0",
+                "job": {"idx": "0", "id": "7"},
+            },
+            {
+                "command": "GETPLAYLIST_PUSH",
+                "part": "2",
+                "job": {"idx": "2", "id": "9"},
+            },
+            {"command": "GETPLAYLIST_PUSH", "part": "end"},
+        ],
+        # Fewer entries than the end message's count
+        [
+            {
+                "command": "GETPLAYLIST_PUSH",
+                "part": "0",
+                "job": {"idx": "0", "id": "7"},
+            },
+            {"command": "GETPLAYLIST_PUSH", "part": "end", "count": "2"},
+        ],
+    ],
+    ids=["gap", "count_mismatch"],
+)
+def test_incomplete_playlist_dropped(
+    client: OasisBleClient, device: OasisDevice, messages: list[dict[str, Any]]
+) -> None:
+    """An incomplete transfer isn't published, so a sync retries instead."""
+    device.update_from_status_dict({"playlist": [1, 2, 3]})
+
+    for message in messages:
+        _notify(client, message)
+
+    assert device.playlist == [1, 2, 3]
+
+
+def test_complete_playlist_with_count_published(
+    client: OasisBleClient, device: OasisDevice
+) -> None:
+    """A complete transfer, including an empty one, is published."""
+    for message in [
+        {"command": "GETPLAYLIST_PUSH", "part": "0", "job": {"idx": "0", "id": "7"}},
+        {"command": "GETPLAYLIST_PUSH", "part": "1", "job": {"idx": "1", "id": "8"}},
+        {"command": "GETPLAYLIST_PUSH", "part": "end", "count": "2"},
+    ]:
+        _notify(client, message)
+    assert device.playlist == [7, 8]
+
+    _notify(client, {"command": "GETPLAYLIST_PUSH", "part": "end", "count": "0"})
+    assert device.playlist == []

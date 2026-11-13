@@ -45,6 +45,9 @@
   },
   "entity": {
     "button": {
+      "enable_http_mode": {
+        "name": "Aktivera HTTP-läge"
+      },
       "random_track": {
         "name": "Spela slumpmässigt spår"
       },

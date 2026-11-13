@@ -147,6 +147,9 @@ class OasisBleClient(OasisClientProtocol):
         self.legacy_firmware = False
         self.mqtt_connected: bool | None = None
         self.internet_connected: bool | None = None
+        # Whether the device's local HTTP API is on, as last reported; it turns off
+        # whenever the device restarts
+        self.http_mode: bool | None = None
 
     @property
     def is_connected(self) -> bool:
@@ -432,6 +435,8 @@ class OasisBleClient(OasisClientProtocol):
             data["wifi_ip"] = ip
         if _has_value(progress := msg.get("progress")):
             data["download_progress"] = _parse_int(progress)
+        if _has_value(http_mode := msg.get("http_mode")):
+            self.http_mode = _bit_to_bool(str(http_mode))
 
         if command in ("WIFISTATUS", "WIFISTATUS_PUSH") and _has_value(
             msg.get("status")
@@ -476,14 +481,30 @@ class OasisBleClient(OasisClientProtocol):
             if isinstance(job, dict) and _has_value(job.get("idx")):
                 self._playlist[_parse_int(job["idx"])] = _parse_int(job.get("id"))
             if part == "end":
+                received, self._playlist = self._playlist, {}
+                # Like the app, only a complete transfer counts: entries are indexed
+                # from 0 without gaps, and the end message gives their count. An
+                # incomplete one is dropped, so a sync waiting for it times out and
+                # is retried
+                count = (
+                    _parse_int(msg.get("count"))
+                    if _has_value(msg.get("count"))
+                    else None
+                )
+                if sorted(received) != list(range(len(received))) or (
+                    count is not None and count != len(received)
+                ):
+                    _LOGGER.debug(
+                        "Dropping incomplete playlist from %s: %s (count %s)",
+                        self.address,
+                        received,
+                        count,
+                    )
+                    return
                 playlist = [
-                    track_id
-                    for _, track_id in sorted(self._playlist.items())
-                    if track_id
+                    track_id for _, track_id in sorted(received.items()) if track_id
                 ]
                 data["playlist"] = playlist
-                # An empty transfer must not republish this one's entries
-                self._playlist = {}
                 # A sync for a written playlist only completes once the device
                 # reports that playlist, not an earlier one still in flight
                 if (
@@ -550,6 +571,24 @@ class OasisBleClient(OasisClientProtocol):
         # Missed identity replies time out quietly, so only an identified device
         # counts as synced; a failed playlist transfer raises before this
         self.synced = device.is_initialized
+
+    async def async_enable_http_mode(self) -> bool | None:
+        """
+        Turn on the device's local HTTP API, as the Oasis Control app does.
+
+        HTTP mode turns off whenever the device restarts. Like the app, the device
+        is asked for its Wi-Fi status a few times afterwards to confirm it's on.
+
+        Returns:
+            bool | None: Whether the device reports HTTP mode on, or None if its
+            firmware doesn't report it.
+        """
+        await self._async_send({"command": "ENABLEHTTP"})
+        for _ in range(3):
+            await self._async_send({"command": "WIFISTATUS"}, "WIFISTATUS")
+            if self.http_mode:
+                break
+        return self.http_mode
 
     async def _async_sync_playlist(
         self,

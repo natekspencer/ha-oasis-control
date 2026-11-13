@@ -28,6 +28,12 @@ def platforms() -> list[Platform]:
     return [Platform.BINARY_SENSOR]
 
 
+@pytest.fixture(autouse=True)
+def mqtt_publishing(mock_mqtt_client: MagicMock) -> None:
+    """Report the device over MQTT whenever its status was last updated."""
+    mock_mqtt_client.last_seen.side_effect = lambda device: device.last_updated
+
+
 def responding_state(hass: HomeAssistant) -> str:
     """Return the state of the device's Responding sensor."""
     entity_id = er.async_get(hass).async_get_entity_id(
@@ -140,3 +146,36 @@ async def test_polling_transport_not_asked_for_status(
     await advance(hass, freezer, STALE_AFTER)
 
     client.async_get_status.assert_not_awaited()
+
+
+async def test_disconnected_as_soon_as_no_transport_works(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_mqtt_client: MagicMock,
+) -> None:
+    """Losing every connection turns the sensor off right away, not after 3 minutes."""
+    coordinator = init_integration.runtime_data
+    device = coordinator.data[0]
+    assert responding_state(hass) == STATE_ON
+    assert coordinator.connection_type(device) == "cloud"
+
+    # The device was just heard from, but nothing reaches it any more
+    mock_mqtt_client.last_seen.side_effect = None
+    mock_mqtt_client.last_seen.return_value = None
+    coordinator._async_check_liveness()
+    await hass.async_block_till_done()
+
+    assert coordinator.connection_type(device) == "disconnected"
+    assert responding_state(hass) == STATE_OFF
+
+
+async def test_connection_available_while_refresh_fails(
+    hass: HomeAssistant, init_integration: MockConfigEntry
+) -> None:
+    """Reachability is local, so the sensor keeps reporting during reauth."""
+    coordinator = init_integration.runtime_data
+    coordinator.last_update_success = False
+    coordinator.async_update_listeners()
+    await hass.async_block_till_done()
+
+    assert responding_state(hass) == STATE_ON

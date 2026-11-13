@@ -45,6 +45,9 @@
   },
   "entity": {
     "button": {
+      "enable_http_mode": {
+        "name": "Enable HTTP mode"
+      },
       "random_track": {
         "name": "Play random track"
       },

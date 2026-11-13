@@ -8,6 +8,11 @@
         }
       }
     },
+    "button": {
+      "enable_http_mode": {
+        "default": "mdi:lan-connect"
+      }
+    },
     "sensor": {
       "connection": {
         "default": "mdi:lan-disconnect",

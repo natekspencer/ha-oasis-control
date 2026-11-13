@@ -110,6 +110,15 @@ class OasisDeviceRespondingEntity(OasisDeviceEntity, BinarySensorEntity):
     """
 
     @property
+    def available(self) -> bool:
+        """Return whether the device is still on the account.
+
+        Reachability is local, so this doesn't follow the cloud refresh like other
+        entities: it keeps reporting while the refresh fails (e.g. during reauth).
+        """
+        return any(d is self.device for d in self.coordinator.data or [])
+
+    @property
     def is_on(self) -> bool:
-        """Return whether the device has responded recently."""
-        return self.coordinator.device_responding(self.device)
+        """Return whether the device is reachable and has responded recently."""
+        return self.coordinator.device_connected(self.device)
