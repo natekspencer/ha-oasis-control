@@ -69,6 +69,13 @@ HTTP_RETRY_INTERVAL = 60
 # Pause after a command before polling, so the reply reflects it
 HTTP_COMMAND_REFRESH_DELAY = 0.5
 
+# Responsiveness: HTTP and BLE poll every 10s, but over MQTT an idle device sends
+# nothing, so a quiet device is asked for its status after PROBE_AFTER; one that
+# still hasn't been heard from after STALE_AFTER is reported as not responding
+LIVENESS_INTERVAL = timedelta(seconds=30)
+PROBE_AFTER = timedelta(seconds=60)
+STALE_AFTER = timedelta(minutes=3)
+
 
 class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
     """Oasis device data update coordinator."""
@@ -129,6 +136,18 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
 
         # Set once async_close starts, so in-flight probes can't add BLE clients
         self._shutting_down = False
+
+        # Last reported responsiveness by serial, and devices being asked for status
+        self._responding: dict[str, bool] = {}
+        self._liveness_probing: set[str] = set()
+        config_entry.async_on_unload(
+            async_track_time_interval(
+                hass,
+                self._async_check_liveness,
+                LIVENESS_INTERVAL,
+                name=f"{DOMAIN} liveness check",
+            )
+        )
 
     @property
     def _device_initialized_signal(self) -> str:
@@ -390,6 +409,69 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
             self._device_cache = cache
             self._store.async_delay_save(lambda: {"devices": cache}, 1)
         return raw_devices
+
+    @staticmethod
+    def device_responding(device: OasisDevice) -> bool:
+        """Return whether the device has been heard from recently, over any transport."""
+        return (
+            device.last_updated is not None
+            and dt_util.utcnow() - device.last_updated < STALE_AFTER
+        )
+
+    @callback
+    def _async_check_liveness(self, _now: datetime | None = None) -> None:
+        """Ask quiet devices for their status, and report responsiveness changes.
+
+        Listeners are only notified when a device starts or stops responding, so
+        a healthy device doesn't produce state updates.
+        """
+        changed = False
+        for device in self.data or []:
+            if not (serial := device.serial_number):
+                continue
+            responding = self.device_responding(device)
+            if self._responding.get(serial) != responding:
+                self._responding[serial] = responding
+                changed = True
+            if (
+                device.last_updated is None
+                or dt_util.utcnow() - device.last_updated >= PROBE_AFTER
+            ):
+                self._async_probe_status(device)
+        if changed:
+            self.async_update_listeners()
+
+    @callback
+    def _async_probe_status(self, device: OasisDevice) -> None:
+        """Ask a quiet device for its status over MQTT, which doesn't push while idle.
+
+        HTTP and BLE already poll on their own; legacy BLE firmware reports its
+        status over MQTT, so those devices are asked over MQTT too.
+        """
+        client = device.client
+        if isinstance(client, OasisBleClient) and client.legacy_firmware:
+            client = self.mqtt_client
+        serial = device.serial_number
+        if (
+            client is not self.mqtt_client
+            or not client.is_connected
+            or not serial
+            or serial in self._liveness_probing
+        ):
+            return
+        self._liveness_probing.add(serial)
+
+        async def _async_probe() -> None:
+            try:
+                await client.async_get_status(device)
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.debug("Error asking %s for its status: %s", serial, err)
+            finally:
+                self._liveness_probing.discard(serial)
+
+        self.config_entry.async_create_background_task(
+            self.hass, _async_probe(), f"{DOMAIN} status probe {serial}"
+        )
 
     def bluetooth_enabled(self, serial: str | None) -> bool:
         """Return whether Bluetooth may be used for a device (its switch is on)."""

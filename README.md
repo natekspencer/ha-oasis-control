@@ -68,6 +68,8 @@ The integration talks to each Oasis over the best connection available, in this 
 
 It switches automatically as connections come and go. The **Connection** diagnostic sensor on each device shows which one is in use (`Local network`, `Bluetooth`, `Cloud` or `Disconnected`).
 
+The **Responding** diagnostic sensor shows whether the table has answered recently over any of these. It turns off when nothing has been heard from the table for 3 minutes, and only changes state when that happens, so it suits alerts and automations.
+
 If the Oasis cloud is down, tables that were set up before keep working over the local network and Bluetooth, including after a Home Assistant restart. Track images and names that come from the cloud may be missing until it's back.
 
 ### Enabling HTTP mode
@@ -86,7 +88,7 @@ Home Assistant finds the table at the IP address reported by the Oasis cloud and
 
 When the Home Assistant [Bluetooth integration](https://www.home-assistant.io/integrations/bluetooth/) is set up (a Bluetooth proxy works), Home Assistant connects to tables in range over Bluetooth. Over Bluetooth the table pushes playback updates instantly, and Home Assistant asks it for its other settings every 10 seconds.
 
-The table accepts a single Bluetooth connection, so while Home Assistant holds it the Oasis Control app can't connect over Bluetooth. To free it for the app, turn off the table's **Bluetooth** switch (under the device's configuration entities). Turning it back on reconnects; neither requires a restart.
+The table accepts a single Bluetooth connection, so while Home Assistant holds it the Oasis Control app can't connect over Bluetooth. To free it for the app, turn off the table's **Connect over Bluetooth** switch (under the device's configuration entities). This only stops Home Assistant connecting; the table's own Bluetooth stays on. Turning it back on reconnects; neither requires a restart.
 
 ### Remote access inactive
 

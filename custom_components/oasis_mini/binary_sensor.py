@@ -48,6 +48,20 @@ async def async_setup_entry(
 
     setup_platform_from_coordinator(entry, async_add_entities, make_entities)
 
+    # Added before the device is initialized, so a device that never answers shows
+    # as not responding instead of having no entity
+    setup_platform_from_coordinator(
+        entry,
+        async_add_entities,
+        lambda new_devices: [
+            OasisDeviceRespondingEntity(
+                entry.runtime_data, device, RESPONDING_DESCRIPTOR
+            )
+            for device in new_devices
+        ],
+        require_initialized=False,
+    )
+
 
 DESCRIPTORS = (
     BinarySensorEntityDescription(
@@ -78,3 +92,24 @@ class OasisDeviceBinarySensorEntity(OasisDeviceEntity, BinarySensorEntity):
             bool: True if the sensor is on, False otherwise.
         """
         return getattr(self.device, self.entity_description.key)
+
+
+RESPONDING_DESCRIPTOR = BinarySensorEntityDescription(
+    key="responding",
+    translation_key="responding",
+    device_class=BinarySensorDeviceClass.CONNECTIVITY,
+    entity_category=EntityCategory.DIAGNOSTIC,
+)
+
+
+class OasisDeviceRespondingEntity(OasisDeviceEntity, BinarySensorEntity):
+    """Whether the device has been heard from recently, over any connection.
+
+    Unlike a last-updated timestamp, this only changes state when the device stops
+    or starts responding, not on every status update while it draws.
+    """
+
+    @property
+    def is_on(self) -> bool:
+        """Return whether the device has responded recently."""
+        return self.coordinator.device_responding(self.device)

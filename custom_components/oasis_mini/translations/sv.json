@@ -56,6 +56,9 @@
       "busy": {
         "name": "Upptagen"
       },
+      "responding": {
+        "name": "Svarar"
+      },
       "wifi_status": {
         "name": "Wi-Fi status"
       }
@@ -135,9 +138,6 @@
           "18": "Ett fel har inträffat vid nedladdning av jobbfilen"
         }
       },
-      "last_updated": {
-        "name": "Senast uppdaterad"
-      },
       "led_color_id": {
         "name": "LED-färg-ID"
       },
@@ -163,7 +163,7 @@
         "name": "Autorengöring"
       },
       "bluetooth": {
-        "name": "Bluetooth"
+        "name": "Anslut via Bluetooth"
       }
     }
   },

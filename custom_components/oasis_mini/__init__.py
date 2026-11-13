@@ -154,10 +154,33 @@ async def async_setup_entry(hass: HomeAssistant, entry: OasisDeviceConfigEntry) 
 
     entry.runtime_data = coordinator
     coordinator.async_setup_bluetooth()
+    _async_remove_retired_entities(hass, entry)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
+
+
+# Unique ID suffixes of entities that are no longer provided, by domain
+RETIRED_ENTITIES: dict[str, tuple[str, ...]] = {
+    # Replaced by the Responding binary sensor
+    Platform.SENSOR: ("-last_updated",),
+}
+
+
+@callback
+def _async_remove_retired_entities(
+    hass: HomeAssistant, entry: OasisDeviceConfigEntry
+) -> None:
+    """Remove registry entries for entities the integration no longer provides."""
+    entity_registry = er.async_get(hass)
+    for entity_entry in er.async_entries_for_config_entry(
+        entity_registry, entry.entry_id
+    ):
+        if entity_entry.unique_id.endswith(
+            RETIRED_ENTITIES.get(entity_entry.domain, ())
+        ):
+            entity_registry.async_remove(entity_entry.entity_id)
 
 
 async def async_unload_entry(

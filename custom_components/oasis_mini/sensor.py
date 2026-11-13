@@ -83,13 +83,6 @@ DESCRIPTORS = [
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
     ),
-    SensorEntityDescription(
-        key="last_updated",
-        translation_key="last_updated",
-        device_class=SensorDeviceClass.TIMESTAMP,
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-    ),
 ]
 DESCRIPTORS.extend(
     SensorEntityDescription(

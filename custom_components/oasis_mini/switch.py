@@ -111,8 +111,8 @@ BLUETOOTH_DESCRIPTOR = SwitchEntityDescription(
 class OasisDeviceBluetoothSwitchEntity(OasisDeviceEntity, SwitchEntity):
     """Switch controlling whether Home Assistant connects to a device over Bluetooth.
 
-    The table accepts a single Bluetooth connection, so turning this off frees it
-    for the Oasis app.
+    It doesn't change the table's own Bluetooth. The table accepts a single
+    Bluetooth connection, so turning this off frees it for the Oasis app.
     """
 
     @property

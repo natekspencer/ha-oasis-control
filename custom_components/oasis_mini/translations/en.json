@@ -56,6 +56,9 @@
       "busy": {
         "name": "Busy"
       },
+      "responding": {
+        "name": "Responding"
+      },
       "wifi_status": {
         "name": "Wi-Fi status"
       }
@@ -135,9 +138,6 @@
           "18": "Error while downloading the job file"
         }
       },
-      "last_updated": {
-        "name": "Last updated"
-      },
       "led_color_id": {
         "name": "LED color ID"
       },
@@ -163,7 +163,7 @@
         "name": "Auto-clean"
       },
       "bluetooth": {
-        "name": "Bluetooth"
+        "name": "Connect over Bluetooth"
       }
     }
   },
