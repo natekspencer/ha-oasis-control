@@ -49,6 +49,14 @@
           "off": "mdi:wifi-off"
         }
       }
+    },
+    "switch": {
+      "bluetooth": {
+        "default": "mdi:bluetooth",
+        "state": {
+          "off": "mdi:bluetooth-off"
+        }
+      }
     }
   }
 }

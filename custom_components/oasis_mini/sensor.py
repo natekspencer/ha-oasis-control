@@ -16,8 +16,12 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import OasisDeviceConfigEntry, setup_platform_from_coordinator
 from .entity import OasisDeviceEntity
-from .pyoasiscontrol import OasisDevice, OasisMqttClient
-from .pyoasiscontrol.clients.ble_client import OasisBleClient
+from .pyoasiscontrol import (
+    OasisBleClient,
+    OasisDevice,
+    OasisHttpClient,
+    OasisMqttClient,
+)
 
 
 async def async_setup_entry(
@@ -103,7 +107,7 @@ CONNECTION_DESCRIPTOR = SensorEntityDescription(
     translation_key="connection",
     device_class=SensorDeviceClass.ENUM,
     entity_category=EntityCategory.DIAGNOSTIC,
-    options=["bluetooth", "cloud", "disconnected"],
+    options=["local", "bluetooth", "cloud", "disconnected"],
 )
 
 
@@ -123,6 +127,8 @@ class OasisDeviceConnectionSensorEntity(OasisDeviceEntity, SensorEntity):
     def native_value(self) -> str:
         """Return how Home Assistant is currently reaching the device."""
         client = self.device.client
+        if isinstance(client, OasisHttpClient) and client.is_connected:
+            return "local"
         if isinstance(client, OasisBleClient) and client.is_connected:
             return "bluetooth"
         if isinstance(client, OasisMqttClient) and client.is_connected:

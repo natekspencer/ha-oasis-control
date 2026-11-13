@@ -1,4 +1,4 @@
-"""Tests for the Oasis config and options flows."""
+"""Tests for the Oasis device-approval config flow."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from custom_components.oasis_mini.const import CONF_USE_BLUETOOTH, DOMAIN
+from custom_components.oasis_mini.const import DOMAIN
 from custom_components.oasis_mini.pyoasiscontrol import UnauthenticatedError
 from homeassistant.config_entries import SOURCE_USER
 from homeassistant.const import CONF_ACCESS_TOKEN, CONF_EMAIL, CONF_PASSWORD
@@ -195,58 +195,3 @@ async def test_reauth_wrong_account(
 
     assert result["type"] is FlowResultType.ABORT
     assert result["reason"] == "wrong_account"
-
-
-@pytest.fixture
-def mock_setup_bluetooth() -> Generator[MagicMock]:
-    """Patch the coordinator's Bluetooth setup."""
-    with patch(
-        "custom_components.oasis_mini.coordinator.OasisDeviceCoordinator.async_setup_bluetooth"
-    ) as mock_setup_bluetooth:
-        yield mock_setup_bluetooth
-
-
-@pytest.mark.parametrize(
-    ("entry_options", "bluetooth_set_up"),
-    [
-        ({}, False),
-        ({CONF_USE_BLUETOOTH: False}, False),
-        ({CONF_USE_BLUETOOTH: True}, True),
-    ],
-)
-@pytest.mark.usefixtures("mock_cloud_client", "mock_mqtt_client")
-async def test_bluetooth_setup_follows_option(
-    hass: HomeAssistant,
-    mock_config_entry: MockConfigEntry,
-    mock_setup_bluetooth: MagicMock,
-    bluetooth_set_up: bool,
-) -> None:
-    """Bluetooth discovery is only started when the option is enabled."""
-    mock_config_entry.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
-    await hass.async_block_till_done()
-
-    assert mock_setup_bluetooth.called is bluetooth_set_up
-
-
-@pytest.mark.usefixtures("init_integration")
-async def test_options_flow_enables_bluetooth(
-    hass: HomeAssistant,
-    mock_config_entry: MockConfigEntry,
-    mock_setup_bluetooth: MagicMock,
-) -> None:
-    """Enabling Bluetooth in the options reloads the entry with Bluetooth set up."""
-    mock_setup_bluetooth.assert_not_called()
-
-    result = await hass.config_entries.options.async_init(mock_config_entry.entry_id)
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "init"
-
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {CONF_USE_BLUETOOTH: True}
-    )
-    await hass.async_block_till_done()
-
-    assert result["type"] is FlowResultType.CREATE_ENTRY
-    assert mock_config_entry.options == {CONF_USE_BLUETOOTH: True}
-    mock_setup_bluetooth.assert_called_once()

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Iterable
+import contextlib
 from datetime import UTC, datetime
 import logging
 import ssl
@@ -23,6 +24,8 @@ HOST: Final = "mqtt.grounded.so"
 PORT: Final = 8084
 PATH: Final = "mqtt"
 RECONNECT_INTERVAL: Final = 4
+# Back off to this while the broker stays unreachable (e.g. a cloud outage)
+MAX_RECONNECT_INTERVAL: Final = 3600
 
 # Command queue behaviour
 MAX_PENDING_COMMANDS: Final = 10
@@ -66,6 +69,8 @@ class OasisMqttClient(OasisClientProtocol):
         self._connected_event: asyncio.Event = asyncio.Event()
         self._connection_listeners: list[Callable[[], None]] = []
         self._stop_event: asyncio.Event = asyncio.Event()
+        # Set to cut a reconnect backoff short (e.g. the cloud is reachable again)
+        self._retry_event: asyncio.Event = asyncio.Event()
 
         # Known devices by serial
         self._devices: dict[str, OasisDevice] = {}
@@ -91,6 +96,15 @@ class OasisMqttClient(OasisClientProtocol):
             and not self._loop_task.done()
             and not self._stop_event.is_set()
         )
+
+    def retry_now(self) -> None:
+        """Retry connecting right away if waiting out a reconnect backoff.
+
+        The backoff itself isn't reset, so if the attempt fails the next one waits
+        as long as it would have; it resets once a connection succeeds.
+        """
+        if self.is_running and not self.is_connected:
+            self._retry_event.set()
 
     @property
     def is_connected(self) -> bool:
@@ -747,6 +761,8 @@ class OasisMqttClient(OasisClientProtocol):
         """
         loop = asyncio.get_running_loop()
         tls_context = await loop.run_in_executor(None, ssl.create_default_context)
+        # Consecutive attempts that failed without connecting
+        failures = 0
 
         while not self._stop_event.is_set():
             try:
@@ -764,6 +780,7 @@ class OasisMqttClient(OasisClientProtocol):
                     websocket_path=f"/{PATH}",
                 ) as client:
                     self._client = client
+                    failures = 0
                     self._connected_event.set()
                     self._connected_at = datetime.now(UTC)
                     _LOGGER.info("Connected to MQTT broker")
@@ -792,8 +809,11 @@ class OasisMqttClient(OasisClientProtocol):
                 dropped = (
                     isinstance(ex, aiomqtt.MqttError) and self._connected_event.is_set()
                 )
+                if not dropped:
+                    failures += 1
+                # Only the first failure of an outage is worth a warning
                 _LOGGER.log(
-                    logging.INFO if dropped else logging.WARNING,
+                    logging.WARNING if failures == 1 else logging.INFO,
                     "MQTT connection error: %s",
                     ex.__cause__ or ex,
                 )
@@ -812,10 +832,15 @@ class OasisMqttClient(OasisClientProtocol):
                 self._subscribed_serials.clear()
 
             if not self._stop_event.is_set():
-                _LOGGER.info(
-                    "Disconnected from broker, retrying in %.1fs", RECONNECT_INTERVAL
+                delay = min(
+                    RECONNECT_INTERVAL * 2 ** max(failures - 1, 0),
+                    MAX_RECONNECT_INTERVAL,
                 )
-                await asyncio.sleep(RECONNECT_INTERVAL)
+                _LOGGER.info("Disconnected from broker, retrying in %.1fs", delay)
+                self._retry_event.clear()
+                with contextlib.suppress(TimeoutError):
+                    async with asyncio.timeout(delay):
+                        await self._retry_event.wait()
 
     async def _handle_status_message(self, msg: aiomqtt.Message) -> None:
         """

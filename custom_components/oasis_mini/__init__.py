@@ -9,14 +9,14 @@ from typing import Any
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_EMAIL, Platform
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.device_registry import DeviceEntry
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 import homeassistant.helpers.entity_registry as er
 
-from .const import CONF_USE_BLUETOOTH, DOMAIN
-from .coordinator import OasisDeviceCoordinator
+from .const import DOMAIN
+from .coordinator import OasisDeviceCoordinator, device_cache_store
 from .entity import OasisDeviceEntity
 from .helpers import create_client
 from .pyoasiscontrol import OasisDevice, UnauthenticatedError
@@ -44,6 +44,7 @@ def setup_platform_from_coordinator(
     async_add_entities: AddEntitiesCallback,
     make_entities: Callable[[Iterable[OasisDevice]], Iterable[OasisDeviceEntity]],
     update_before_add: bool = False,
+    require_initialized: bool = True,
 ) -> None:
     """
     Populate entities for devices managed by the coordinator and add entities for any devices discovered later.
@@ -55,6 +56,7 @@ def setup_platform_from_coordinator(
         async_add_entities: Home Assistant callback to add entities to the platform.
         make_entities: Callable that accepts an iterable of `OasisDevice` objects and returns an iterable of `OasisDeviceEntity` instances to add.
         update_before_add: If true, entities will be updated before being added.
+        require_initialized: If false, entities are added as soon as the device is on the account instead of once it is fully identified (for entities that control how the device is reached).
     """
     coordinator = entry.runtime_data
     known_serials: set[str] = set()
@@ -68,7 +70,9 @@ def setup_platform_from_coordinator(
 
         for device in devices:
             serial = device.serial_number
-            if not device.is_initialized or not serial or serial in known_serials:
+            if not serial or serial in known_serials:
+                continue
+            if require_initialized and not device.is_initialized:
                 continue
 
             known_serials.add(serial)
@@ -118,16 +122,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: OasisDeviceConfigEntry) 
         True if the config entry was set up successfully.
     """
     cloud_client = create_client(hass, entry.data)
+    coordinator = OasisDeviceCoordinator(hass, entry, cloud_client)
+    await coordinator.async_load_device_cache()
+
+    user: dict[str, Any] | None = None
     try:
         user = await cloud_client.async_get_user()
     except UnauthenticatedError as err:
-        await cloud_client.async_close()
+        await coordinator.async_close()
         raise ConfigEntryAuthFailed(err) from err
-    except Exception:
-        await cloud_client.async_close()
-        raise
-
-    coordinator = OasisDeviceCoordinator(hass, entry, cloud_client)
+    except Exception as err:
+        # Devices seen before can still be reached locally during a cloud outage
+        if not coordinator.has_device_cache:
+            await coordinator.async_close()
+            raise ConfigEntryNotReady(
+                f"Unable to reach the Oasis cloud: {err}"
+            ) from err
+        _LOGGER.debug("Unable to reach the Oasis cloud at startup: %s", err)
 
     try:
         await coordinator.async_config_entry_first_refresh()
@@ -135,15 +146,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: OasisDeviceConfigEntry) 
         await coordinator.async_close()
         raise
 
-    if entry.unique_id != (user_id := str(user["id"])):
+    if user and entry.unique_id != (user_id := str(user["id"])):
         hass.config_entries.async_update_entry(entry, unique_id=user_id)
 
     if not coordinator.data:
         _LOGGER.warning("No devices associated with account")
 
     entry.runtime_data = coordinator
-    if entry.options.get(CONF_USE_BLUETOOTH, False):
-        coordinator.async_setup_bluetooth()
+    coordinator.async_setup_bluetooth()
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -183,6 +193,7 @@ async def async_remove_entry(
     except Exception:
         _LOGGER.exception("Error attempting to logout from the cloud")
     await cloud_client.async_close()
+    await device_cache_store(hass, entry.entry_id).async_remove()
 
 
 async def async_migrate_entry(

@@ -48,6 +48,21 @@ async def async_setup_entry(
 
     setup_platform_from_coordinator(entry, async_add_entities, make_entities)
 
+    if entry.runtime_data.bluetooth_available:
+        # Added before the device is initialized: a device that can only be reached
+        # over Bluetooth never initializes while it's off, and must be turnable on
+        setup_platform_from_coordinator(
+            entry,
+            async_add_entities,
+            lambda new_devices: [
+                OasisDeviceBluetoothSwitchEntity(
+                    entry.runtime_data, device, BLUETOOTH_DESCRIPTOR
+                )
+                for device in new_devices
+            ],
+            require_initialized=False,
+        )
+
 
 DESCRIPTORS = (
     SwitchEntityDescription(
@@ -84,3 +99,33 @@ class OasisDeviceSwitchEntity(OasisDeviceEntity, SwitchEntity):
         Enable the device's auto-clean feature.
         """
         await self.device.async_set_auto_clean(True)
+
+
+BLUETOOTH_DESCRIPTOR = SwitchEntityDescription(
+    key="bluetooth",
+    translation_key="bluetooth",
+    entity_category=EntityCategory.CONFIG,
+)
+
+
+class OasisDeviceBluetoothSwitchEntity(OasisDeviceEntity, SwitchEntity):
+    """Switch controlling whether Home Assistant connects to a device over Bluetooth.
+
+    The table accepts a single Bluetooth connection, so turning this off frees it
+    for the Oasis app.
+    """
+
+    @property
+    def is_on(self) -> bool:
+        """Return whether Bluetooth may be used for this device."""
+        return self.coordinator.bluetooth_enabled(self.device.serial_number)
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Allow connecting to the device over Bluetooth."""
+        await self.coordinator.async_set_bluetooth_enabled(self.device, True)
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Release the device's Bluetooth connection and stop using Bluetooth."""
+        await self.coordinator.async_set_bluetooth_enabled(self.device, False)
+        self.async_write_ha_state()

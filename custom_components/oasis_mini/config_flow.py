@@ -10,21 +10,17 @@ from typing import Any
 from aiohttp import ClientConnectorError, ClientResponseError
 import voluptuous as vol
 
-from homeassistant.config_entries import (
-    ConfigEntry,
-    ConfigFlow,
-    ConfigFlowResult,
-    OptionsFlowWithReload,
-)
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_ACCESS_TOKEN, CONF_EMAIL, CONF_PASSWORD
-from homeassistant.core import callback
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.selector import (
     QrCodeSelector,
     QrCodeSelectorConfig,
     QrErrorCorrectionLevel,
 )
+from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 
-from .const import CONF_USE_BLUETOOTH, DOMAIN
+from .const import DOMAIN
 from .helpers import create_client
 from .pyoasiscontrol import OasisCloudClient, UnauthenticatedError
 
@@ -33,7 +29,6 @@ _LOGGER = logging.getLogger(__name__)
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {vol.Required(CONF_EMAIL): str, vol.Required(CONF_PASSWORD): str}
 )
-OPTIONS_SCHEMA = vol.Schema({vol.Required(CONF_USE_BLUETOOTH, default=False): bool})
 
 # Steps that collect credentials; each matches an async_step_<id> entry point
 CREDENTIALS_STEPS = ("user", "reauth_confirm", "reconfigure")
@@ -51,15 +46,38 @@ class OasisDeviceConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
     MINOR_VERSION = 3
 
-    @staticmethod
-    @callback
-    def async_get_options_flow(config_entry: ConfigEntry) -> OasisDeviceOptionsFlow:
-        """Return the options flow for this handler."""
-        return OasisDeviceOptionsFlow()
-
     _email: str | None = None
     _challenge: dict[str, Any] | None = None
     _credentials_step: str = "user"
+
+    async def async_step_dhcp(
+        self, discovery_info: DhcpServiceInfo
+    ) -> ConfigFlowResult:
+        """Pass a known device's current IP address on to its coordinator.
+
+        Home Assistant only starts this for MAC addresses already registered to the
+        integration, so it never offers a new setup; it keeps the local HTTP address
+        current even when the cloud has a stale one. The device is matched through
+        the device registry, so this also works before the device has been reached
+        since startup (when its MAC address isn't known yet).
+        """
+        device_entry = dr.async_get(self.hass).async_get_device(
+            connections={
+                (dr.CONNECTION_NETWORK_MAC, dr.format_mac(discovery_info.macaddress))
+            }
+        )
+        serials = {
+            serial
+            for domain, serial in (device_entry.identifiers if device_entry else ())
+            if domain == DOMAIN
+        }
+        for entry in self.hass.config_entries.async_loaded_entries(DOMAIN):
+            for device in entry.runtime_data.data or []:
+                if device.serial_number in serials:
+                    entry.runtime_data.async_update_host(
+                        device, discovery_info.ip, "DHCP"
+                    )
+        return self.async_abort(reason="already_configured")
 
     async def async_step_reauth(
         self, entry_data: Mapping[str, Any]
@@ -266,22 +284,4 @@ class OasisDeviceConfigFlow(ConfigFlow, domain=DOMAIN):
             data_schema=data_schema,
             errors=errors or {},
             description_placeholders={"code": self._challenge["code"]},
-        )
-
-
-class OasisDeviceOptionsFlow(OptionsFlowWithReload):
-    """Handle options for Oasis devices; the entry reloads when they change."""
-
-    async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> ConfigFlowResult:
-        """Show the options form, or save the submitted options."""
-        if user_input is not None:
-            return self.async_create_entry(data=user_input)
-
-        return self.async_show_form(
-            step_id="init",
-            data_schema=self.add_suggested_values_to_schema(
-                OPTIONS_SCHEMA, self.config_entry.options
-            ),
         )

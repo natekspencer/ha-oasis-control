@@ -43,16 +43,6 @@
       "wrong_account": "Kontot som används för integrationen bör inte ändras"
     }
   },
-  "options": {
-    "step": {
-      "init": {
-        "description": "En direkt Bluetooth-anslutning ger snabbare och mer tillförlitliga uppdateringar när bordet är inom räckhåll. Bordet accepterar endast en Bluetooth-anslutning, så medan Home Assistant är ansluten kan Oasis-appen inte ansluta via Bluetooth och använder molnet i stället.",
-        "data": {
-          "use_bluetooth": "Anslut via Bluetooth när enheten är inom räckhåll"
-        }
-      }
-    }
-  },
   "entity": {
     "button": {
       "random_track": {
@@ -111,7 +101,8 @@
         "state": {
           "bluetooth": "Bluetooth",
           "cloud": "Moln",
-          "disconnected": "Frånkopplad"
+          "disconnected": "Frånkopplad",
+          "local": "Lokalt nätverk"
         }
       },
       "download_progress": {
@@ -170,6 +161,9 @@
     "switch": {
       "auto_clean": {
         "name": "Autorengöring"
+      },
+      "bluetooth": {
+        "name": "Bluetooth"
       }
     }
   },

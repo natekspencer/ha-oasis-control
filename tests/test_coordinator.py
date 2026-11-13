@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from custom_components.oasis_mini.pyoasiscontrol import UnauthenticatedError
+import pytest
+
+from custom_components.oasis_mini.pyoasiscontrol import (
+    OasisBleClient,
+    UnauthenticatedError,
+)
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntry
 from homeassistant.core import HomeAssistant
 
@@ -51,3 +57,86 @@ async def test_ignored_ble_device_reprobed_when_on_account(
 
     mock_probe.assert_called_once_with("AA:AA:AA:AA:AA:AA")
     assert coordinator._ble_ignored == {"BB:BB:BB:BB:BB:BB": "OM-OTHER-ACCOUNT"}
+
+
+def _ble_client(**attrs: object) -> MagicMock:
+    """Return a mock BLE client for the test device."""
+    client = MagicMock(spec=OasisBleClient)
+    client.address = "AA:AA:AA:AA:AA:AA"
+    client.serial_number = SERIAL_NUMBER
+    client.is_connected = True
+    client.legacy_firmware = False
+    client.async_get_status = AsyncMock()
+    for name, value in attrs.items():
+        setattr(client, name, value)
+    return client
+
+
+async def test_ble_poll_requests_status_when_active(
+    hass: HomeAssistant, init_integration: MockConfigEntry
+) -> None:
+    """A device using BLE is asked for its status, as settings aren't pushed."""
+    coordinator = init_integration.runtime_data
+    device = coordinator.data[0]
+    client = _ble_client()
+    device.attach_client(client)
+
+    coordinator._async_ble_poll()
+    await hass.async_block_till_done()
+
+    client.async_get_status.assert_awaited_once_with(device)
+
+
+@pytest.mark.parametrize(
+    ("attrs", "active"),
+    [
+        ({"is_connected": False}, True),
+        ({"legacy_firmware": True}, True),
+        ({}, False),
+    ],
+    ids=["disconnected", "legacy_firmware", "not_active"],
+)
+async def test_ble_poll_skipped(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    attrs: dict[str, object],
+    active: bool,
+) -> None:
+    """BLE isn't polled when it can't answer or another transport is in use."""
+    coordinator = init_integration.runtime_data
+    device = coordinator.data[0]
+    client = _ble_client(**attrs)
+    coordinator.ble_clients[client.address] = client
+    if active:
+        device.attach_client(client)
+
+    coordinator._async_ble_poll()
+    await hass.async_block_till_done()
+
+    client.async_get_status.assert_not_awaited()
+
+
+async def test_ble_poll_does_not_overlap(
+    hass: HomeAssistant, init_integration: MockConfigEntry
+) -> None:
+    """A slow BLE poll isn't repeated until it has finished."""
+    coordinator = init_integration.runtime_data
+    device = coordinator.data[0]
+    reply = asyncio.Event()
+    client = _ble_client()
+
+    async def _wait_for_reply(_device: object) -> None:
+        await reply.wait()
+
+    client.async_get_status.side_effect = _wait_for_reply
+    device.attach_client(client)
+
+    coordinator._async_ble_poll()
+    await asyncio.sleep(0)
+    coordinator._async_ble_poll()
+    reply.set()
+    await hass.async_block_till_done()
+    coordinator._async_ble_poll()
+    await hass.async_block_till_done()
+
+    assert client.async_get_status.await_count == 2

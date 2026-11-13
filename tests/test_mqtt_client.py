@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 import logging
 from types import SimpleNamespace
@@ -208,3 +209,55 @@ async def test_failed_connection_warns(
         for record in caplog.records
         if record.getMessage() == "MQTT connection error: Connection refused"
     ] == [logging.WARNING]
+
+
+async def test_retry_now_skips_backoff(
+    device: OasisDevice, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Failures back off and warn once; retry_now cuts the wait short."""
+    client = OasisMqttClient()
+    client.register_device(device)
+    attempts = 0
+
+    def _fail(*_: object) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise aiomqtt.MqttError("Connection refused")
+
+    async def _wait_for_attempt(count: int) -> None:
+        async with asyncio.timeout(2):
+            while attempts < count:
+                await asyncio.sleep(0.01)
+
+    mqtt = MagicMock()
+    mqtt.return_value.__aenter__ = AsyncMock(side_effect=_fail)
+
+    with patch("aiomqtt.Client", mqtt), caplog.at_level(logging.INFO):
+        client.start("user", AsyncMock(return_value="token"))
+        try:
+            await _wait_for_attempt(1)
+
+            # Waiting out the 4s backoff, so nothing happens on its own
+            await asyncio.sleep(0.1)
+            assert attempts == 1
+
+            client.retry_now()
+            await _wait_for_attempt(2)
+        finally:
+            await client.async_close()
+
+    errors = [
+        record.levelno
+        for record in caplog.records
+        if record.getMessage() == "MQTT connection error: Connection refused"
+    ]
+    assert errors == [logging.WARNING, logging.INFO]
+    # retry_now doesn't reset the backoff: the next wait is still doubled
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("Disconnected from broker")
+    ] == [
+        "Disconnected from broker, retrying in 4.0s",
+        "Disconnected from broker, retrying in 8.0s",
+    ]
