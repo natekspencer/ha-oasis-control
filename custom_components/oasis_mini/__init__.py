@@ -153,6 +153,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: OasisDeviceConfigEntry) 
         _LOGGER.warning("No devices associated with account")
 
     entry.runtime_data = coordinator
+    # Addresses discovered while the first refresh was running
+    coordinator.async_apply_pending_hosts()
     coordinator.async_setup_bluetooth()
     _async_remove_retired_entities(hass, entry)
 

@@ -14,7 +14,7 @@ from yarl import URL
 from custom_components.oasis_mini.const import DOMAIN
 from custom_components.oasis_mini.coordinator import OasisDeviceCoordinator
 from custom_components.oasis_mini.pyoasiscontrol import OasisBleClient, OasisHttpClient
-from homeassistant.config_entries import SOURCE_DHCP
+from homeassistant.config_entries import SOURCE_DHCP, ConfigEntryState
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
@@ -619,6 +619,48 @@ async def test_dhcp_address_kept_until_entry_loads(
         ),
     )
     assert result["type"] is FlowResultType.ABORT
+
+    with patch("custom_components.oasis_mini.PLATFORMS", platforms):
+        assert await hass.config_entries.async_setup(mock_config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    coordinator = mock_config_entry.runtime_data
+    assert coordinator.http_clients[SERIAL_NUMBER].host == NEW_HOST
+    assert coordinator._pending_hosts == {}
+
+
+async def test_dhcp_address_during_setup_is_handed_over(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    mock_config_entry: MockConfigEntry,
+    mock_cloud_client: MagicMock,
+    mock_mqtt_client: MagicMock,
+    platforms: list[Platform],
+) -> None:
+    """A sighting after the cache is loaded, but before setup finishes, is used."""
+    mock_device_offline(aioclient_mock)
+    mock_config_entry.add_to_hass(hass)
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=mock_config_entry.entry_id,
+        identifiers={(DOMAIN, SERIAL_NUMBER)},
+        connections={(dr.CONNECTION_NETWORK_MAC, dr.format_mac(MAC))},
+    )
+    devices = mock_cloud_client.async_get_devices.return_value
+
+    async def _get_devices_while_dhcp_reports() -> list[dict[str, Any]]:
+        # The entry is setting up: its coordinator has read its store already
+        assert mock_config_entry.state is ConfigEntryState.SETUP_IN_PROGRESS
+        result = await hass.config_entries.flow.async_init(
+            DOMAIN,
+            context={"source": SOURCE_DHCP},
+            data=DhcpServiceInfo(
+                ip=NEW_HOST, hostname="esp32", macaddress=MAC.replace(":", "").lower()
+            ),
+        )
+        assert result["type"] is FlowResultType.ABORT
+        return devices
+
+    mock_cloud_client.async_get_devices.side_effect = _get_devices_while_dhcp_reports
 
     with patch("custom_components.oasis_mini.PLATFORMS", platforms):
         assert await hass.config_entries.async_setup(mock_config_entry.entry_id)

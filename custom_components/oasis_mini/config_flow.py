@@ -10,7 +10,7 @@ from typing import Any
 from aiohttp import ClientConnectorError, ClientResponseError
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigEntryState, ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_ACCESS_TOKEN, CONF_EMAIL, CONF_PASSWORD
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.selector import (
@@ -21,7 +21,7 @@ from homeassistant.helpers.selector import (
 from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 
 from .const import DOMAIN
-from .coordinator import async_save_discovered_host
+from .coordinator import async_get_coordinator, async_save_discovered_host
 from .helpers import create_client
 from .pyoasiscontrol import OasisCloudClient, UnauthenticatedError
 
@@ -76,18 +76,16 @@ class OasisDeviceConfigFlow(ConfigFlow, domain=DOMAIN):
             entry = self.hass.config_entries.async_get_entry(entry_id)
             if entry is None or entry.domain != DOMAIN:
                 continue
-            if entry.state is not ConfigEntryState.LOADED:
-                # Home Assistant doesn't report the same sighting again, so keep it
-                # for when the entry is set up
-                for serial in serials:
+            # Home Assistant doesn't report the same sighting again, so it's handed
+            # to the entry's coordinator while it's loaded or setting up, and kept
+            # for its next setup otherwise
+            coordinator = async_get_coordinator(self.hass, entry.entry_id)
+            for serial in serials:
+                if coordinator is not None:
+                    coordinator.async_add_discovered_host(serial, discovery_info.ip)
+                else:
                     await async_save_discovered_host(
                         self.hass, entry.entry_id, serial, discovery_info.ip
-                    )
-                continue
-            for device in entry.runtime_data.data or []:
-                if device.serial_number in serials:
-                    entry.runtime_data.async_update_host(
-                        device, discovery_info.ip, "DHCP"
                     )
         return self.async_abort(reason="already_configured")
 

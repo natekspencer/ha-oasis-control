@@ -49,6 +49,14 @@ _LOGGER = logging.getLogger(__name__)
 STORAGE_VERSION = 1
 
 
+@callback
+def async_get_coordinator(
+    hass: HomeAssistant, entry_id: str
+) -> OasisDeviceCoordinator | None:
+    """Return the coordinator of an entry that's loaded or still setting up."""
+    return hass.data.get(DOMAIN, {}).get(entry_id)
+
+
 def device_cache_store(hass: HomeAssistant, entry_id: str) -> Store[dict[str, Any]]:
     """Return the store holding a config entry's cached device list."""
     return Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry_id}.devices")
@@ -127,6 +135,9 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         self._device_cache_dirty = False
         # Addresses discovered while the entry wasn't loaded, by serial number
         self._pending_hosts: dict[str, str] = {}
+        # Registered right away, so discoveries during setup reach this coordinator
+        # instead of a store it has already read
+        hass.data.setdefault(DOMAIN, {})[config_entry.entry_id] = self
         self.mqtt_client = OasisMqttClient()
         self.mqtt_client.reachable_for = STALE_AFTER
         config_entry.async_on_unload(
@@ -266,12 +277,7 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
                     if (ip := raw.get("ip")) and self._cloud_ips.get(serial) != ip:
                         self._cloud_ips[serial] = ip
                         self.async_update_host(device, ip, "cloud")
-                    if host := self._pending_hosts.pop(serial, None):
-                        # Found by DHCP while the entry wasn't loaded; newer than
-                        # anything the cloud reported
-                        self.async_update_host(device, host, "DHCP")
-                        self._device_cache_dirty = True
-                        self._store.async_delay_save(self._device_cache_data, 1)
+                    self._async_apply_pending_host(device)
 
                     devices.append(device)
 
@@ -402,6 +408,38 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
             self.mqtt_client.unregister_device(device)
         return published
 
+    @callback
+    def async_add_discovered_host(self, serial: str, host: str) -> None:
+        """Use an address discovered (e.g. by DHCP) for a device of this entry.
+
+        Applied right away if the device is known; otherwise (e.g. during setup)
+        kept, and saved, until the device is.
+        """
+        if device := next(
+            (d for d in self.data or [] if d.serial_number == serial), None
+        ):
+            self.async_update_host(device, host, "DHCP")
+            return
+        self._pending_hosts[serial] = host
+        self._device_cache_dirty = True
+        self._store.async_delay_save(self._device_cache_data, 1)
+
+    @callback
+    def async_apply_pending_hosts(self) -> None:
+        """Apply addresses discovered before the devices were known."""
+        for device in self.data or []:
+            self._async_apply_pending_host(device)
+
+    @callback
+    def _async_apply_pending_host(self, device: OasisDevice) -> None:
+        """Apply a device's pending discovered address, if any."""
+        if host := self._pending_hosts.pop(device.serial_number or "", None):
+            # Found by DHCP before the device was known; newer than anything the
+            # cloud reported
+            self.async_update_host(device, host, "DHCP")
+            self._device_cache_dirty = True
+            self._store.async_delay_save(self._device_cache_data, 1)
+
     def _registered_mac(self, serial: str) -> str | None:
         """Return the network MAC address registered for a device, if any."""
         device_entry = dr.async_get(self.hass).async_get_device(
@@ -421,7 +459,8 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         if (data := await self._store.async_load()) is not None:
             if "devices" in data:
                 self._device_cache = data["devices"]
-            self._pending_hosts = dict(data.get("hosts", {}))
+            # Merged, so an address handed over before this load is kept
+            self._pending_hosts = {**data.get("hosts", {}), **self._pending_hosts}
 
     @property
     def has_device_cache(self) -> bool:
@@ -1170,6 +1209,8 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
     async def async_close(self) -> None:
         """Close client connections."""
         self._shutting_down = True
+        if async_get_coordinator(self.hass, self.config_entry.entry_id) is self:
+            del self.hass.data[DOMAIN][self.config_entry.entry_id]
         if self._device_cache_dirty:
             # Written now, so a delayed save can't recreate it after the entry (and
             # its cache) is removed
