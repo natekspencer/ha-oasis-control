@@ -79,6 +79,10 @@ class OasisMqttClient(OasisClientProtocol):
         self._initialized_events: dict[str, asyncio.Event] = {}
         self._mac_events: dict[str, asyncio.Event] = {}
 
+        # Devices that have published since the current broker connection; the
+        # broker connection alone doesn't mean a device is reachable through it
+        self._seen_serials: set[str] = set()
+
         # Subscription bookkeeping
         self._subscribed_serials: set[str] = set()
         self._subscription_lock = asyncio.Lock()
@@ -111,11 +115,20 @@ class OasisMqttClient(OasisClientProtocol):
         """Return `True` if the MQTT client is currently connected."""
         return self._connected_event.is_set()
 
+    def is_device_reachable(self, device: OasisDevice) -> bool:
+        """Return `True` if the device has published since the broker connected.
+
+        A device whose own cloud connection is down ("Remote access inactive" in
+        the app) never publishes, even while the broker connection is up.
+        """
+        return self.is_connected and device.serial_number in self._seen_serials
+
     def add_connection_listener(
         self, listener: Callable[[], None]
     ) -> Callable[[], None]:
         """
-        Register a callback invoked whenever the broker connection is established or lost.
+        Register a callback invoked whenever the broker connection is established or
+        lost, or a device first publishes over it (becomes reachable).
 
         Returns:
             Callable[[], None]: An unsubscribe function; calling it multiple times is safe.
@@ -786,6 +799,7 @@ class OasisMqttClient(OasisClientProtocol):
                 ) as client:
                     self._client = client
                     failures = 0
+                    self._seen_serials.clear()
                     self._connected_event.set()
                     self._connected_at = datetime.now(UTC)
                     _LOGGER.info("Connected to MQTT broker")
@@ -960,6 +974,12 @@ class OasisMqttClient(OasisClientProtocol):
 
         if data:
             device.update_from_status_dict(data, source=self)
+
+        if serial not in self._seen_serials:
+            # The device is reachable through the broker; let listeners know even if
+            # this message changed nothing
+            self._seen_serials.add(serial)
+            self._notify_connection_listeners()
 
         is_initialized_event = self._initialized_events.setdefault(
             serial, asyncio.Event()

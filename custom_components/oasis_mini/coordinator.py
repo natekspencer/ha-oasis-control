@@ -291,13 +291,13 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         except UpdateFailed:
             raise
         except Exception as ex:
-            self._async_discard_new_devices(devices)
-            if not self.data:
+            published = self._async_discard_new_devices(devices)
+            if not self.data and not published:
                 raise UpdateFailed("Unexpected error updating Oasis devices") from ex
             _LOGGER.warning(
                 "Error updating Oasis devices; reusing previous data", exc_info=ex
             )
-            return self.data
+            return [*(self.data or []), *published]
 
         if devices != self.data:
             self.last_updated = dt_util.now()
@@ -305,18 +305,31 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         return devices
 
     @callback
-    def _async_discard_new_devices(self, devices: list[OasisDevice]) -> None:
-        """Stop HTTP polling for devices assembled by a refresh that is discarded.
+    def _async_discard_new_devices(
+        self, devices: list[OasisDevice]
+    ) -> list[OasisDevice]:
+        """Drop devices assembled by a refresh that failed, except published ones.
 
         A failed refresh keeps the previous data, so device objects it created are
-        dropped; their polling tasks would otherwise keep updating those orphans.
-        Devices retained from the previous data keep polling.
+        dropped and their HTTP polling stopped; it would otherwise keep updating
+        orphans. A new device that already initialized during the refresh has had
+        entities created for it, so it's kept to stay attached to them. Devices
+        retained from the previous data are untouched.
+
+        Returns:
+            list[OasisDevice]: The new devices kept because they were published.
         """
         retained = {d.serial_number: d for d in self.data or []}
+        published: list[OasisDevice] = []
         for device in devices:
-            if (serial := device.serial_number) and retained.get(serial) is not device:
-                self._cloud_ips.pop(serial, None)
-                self._async_stop_http(serial)
+            if not (serial := device.serial_number) or retained.get(serial) is device:
+                continue
+            if serial in self._initialized_serials:
+                published.append(device)
+                continue
+            self._cloud_ips.pop(serial, None)
+            self._async_stop_http(serial)
+        return published
 
     async def async_load_device_cache(self) -> None:
         """Load the device list cached from the last successful cloud refresh."""
@@ -744,10 +757,25 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
             )
         client.attach_device(device)
         self._async_select_client(device)
+        await self._async_ble_sync(client, device)
+
+    async def _async_ble_sync(
+        self, client: OasisBleClient, device: OasisDevice
+    ) -> None:
+        """Fetch a device's state over BLE, falling back to MQTT on legacy firmware.
+
+        Legacy firmware only reports identity and Wi-Fi state over BLE, which is
+        only learned from this sync; MQTT may have connected (and skipped its own
+        refresh for the device) before then, so ask it for a snapshot now.
+        """
         try:
             await client.async_get_all(device)
         except Exception as err:  # noqa: BLE001
-            _LOGGER.debug("Error fetching status over BLE from %s: %s", address, err)
+            _LOGGER.debug(
+                "Error fetching status over BLE from %s: %s", client.address, err
+            )
+        if client.legacy_firmware and not device.is_sleeping:
+            await self.mqtt_client.async_get_all(device)
 
     @callback
     def _async_ble_disconnected(self, address: str) -> None:
@@ -802,10 +830,7 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
             "Bluetooth restored for Oasis device %s (%s)", device.serial_number, address
         )
         self._async_select_client(device)
-        try:
-            await client.async_get_all(device)
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.debug("Error fetching status over BLE from %s: %s", address, err)
+        await self._async_ble_sync(client, device)
 
     async def _async_ble_retry(
         self,

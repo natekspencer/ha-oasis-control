@@ -299,3 +299,62 @@ async def test_connection_completing_after_close_dropped(
         await task
     connection.disconnect.assert_awaited_once()
     assert not client.is_connected
+
+
+async def test_queued_connect_after_close_stays_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connect queued behind one in progress doesn't reopen a closed client."""
+    started = asyncio.Event()
+    proceed = asyncio.Event()
+    connections: list[MagicMock] = []
+
+    async def _establish(*_args: object, **_kwargs: object) -> MagicMock:
+        connection = MagicMock(is_connected=True)
+        connection.start_notify = AsyncMock()
+        connection.disconnect = AsyncMock()
+        connections.append(connection)
+        started.set()
+        await proceed.wait()
+        return connection
+
+    monkeypatch.setattr(ble_client, "establish_connection", _establish)
+    client = OasisBleClient(ADDRESS, lambda: MagicMock())
+
+    first = asyncio.create_task(client.async_connect())
+    await started.wait()
+    second = asyncio.create_task(client.async_connect())
+    await asyncio.sleep(0)
+    await client.async_close()
+    proceed.set()
+
+    for task in (first, second):
+        with pytest.raises(ble_client.BleakError):
+            await task
+    # Only the first attempt connected, and it was disconnected again
+    assert len(connections) == 1
+    connections[0].disconnect.assert_awaited_once()
+    assert not client.is_connected
+
+
+async def test_overlapping_requests_get_their_own_replies(
+    client: OasisBleClient, device: OasisDevice
+) -> None:
+    """A second request isn't sent until the first has its reply."""
+    first = asyncio.create_task(client.async_get_status(device))
+    second = asyncio.create_task(client.async_get_status(device))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert [c["command"] for c in _written(client)] == ["GETSTATUS"]
+
+    _notify(client, {"command": "GETSTATUS", "st": "4"})
+    await first
+    for _ in range(5):
+        await asyncio.sleep(0)
+    # The first reply didn't also complete the second request
+    assert not second.done()
+    assert [c["command"] for c in _written(client)] == ["GETSTATUS", "GETSTATUS"]
+
+    _notify(client, {"command": "GETSTATUS", "st": "5"})
+    await second
+    assert device.status_code == 5

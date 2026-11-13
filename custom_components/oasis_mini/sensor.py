@@ -131,6 +131,8 @@ class OasisDeviceConnectionSensorEntity(OasisDeviceEntity, SensorEntity):
             return "local"
         if isinstance(client, OasisBleClient) and client.is_connected:
             return "bluetooth"
-        if isinstance(client, OasisMqttClient) and client.is_connected:
+        if isinstance(client, OasisMqttClient) and client.is_device_reachable(
+            self.device
+        ):
             return "cloud"
         return "disconnected"

@@ -280,3 +280,20 @@ async def test_resubscribe_refreshes_legacy_ble_devices(
         call(f"{SERIAL}/COMMAND/CTL", b"GETALL=", qos=1)
         in mqtt_client._client.publish.mock_calls
     ) is refreshed
+
+
+async def test_device_reachable_only_once_it_publishes(
+    mqtt_client: OasisMqttClient, device: OasisDevice
+) -> None:
+    """The broker connection alone doesn't make a device reachable."""
+    listener = MagicMock()
+    mqtt_client.add_connection_listener(listener)
+    assert not mqtt_client.is_device_reachable(device)
+
+    await mqtt_client._handle_status_message(_message("USERATTACHED", "1"))
+
+    assert mqtt_client.is_device_reachable(device)
+    listener.assert_called_once()
+
+    mqtt_client._connected_event.clear()
+    assert not mqtt_client.is_device_reachable(device)

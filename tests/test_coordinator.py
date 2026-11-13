@@ -9,6 +9,7 @@ import pytest
 
 from custom_components.oasis_mini.pyoasiscontrol import (
     OasisBleClient,
+    OasisDevice,
     UnauthenticatedError,
 )
 from homeassistant.config_entries import SOURCE_REAUTH, ConfigEntry
@@ -211,3 +212,60 @@ async def test_cancelled_ble_probe_closes_client(
 
     client.async_close.assert_awaited_once()
     assert client.address not in coordinator.ble_clients
+
+
+async def test_failed_refresh_keeps_published_new_device(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_cloud_client: MagicMock,
+    mock_mqtt_client: MagicMock,
+) -> None:
+    """A new device whose entities were created mid-refresh survives a failure."""
+    coordinator = init_integration.runtime_data
+    mock_cloud_client.async_get_devices.return_value = [
+        *mock_cloud_client.async_get_devices.return_value,
+        {"serial_number": "OM-NEW", "ip": "10.0.0.8", "model": {"name": "Oasis"}},
+    ]
+
+    def _initialize_then_fail(devices: list[OasisDevice]) -> None:
+        # The new device initializes (and is published) before the refresh fails
+        for device in devices:
+            if device.serial_number == "OM-NEW":
+                device.update_from_status_dict(
+                    {"mac_address": "11:22:33:44:55:66", "software_version": "3.54"}
+                )
+        raise RuntimeError("boom")
+
+    mock_mqtt_client.register_devices.side_effect = _initialize_then_fail
+
+    with patch.object(coordinator, "_async_http_poll"):
+        await coordinator.async_refresh()
+
+    assert [d.serial_number for d in coordinator.data] == [SERIAL_NUMBER, "OM-NEW"]
+    assert "OM-NEW" in coordinator.http_clients
+
+
+@pytest.mark.parametrize(("legacy", "refreshed"), [(True, True), (False, False)])
+async def test_ble_sync_refreshes_legacy_firmware_over_mqtt(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_mqtt_client: MagicMock,
+    legacy: bool,
+    refreshed: bool,
+) -> None:
+    """Legacy firmware found by a BLE sync gets its status from MQTT right away."""
+    coordinator = init_integration.runtime_data
+    device = coordinator.data[0]
+    client = _ble_client()
+    client.legacy_firmware = False
+
+    async def _get_all(_device: OasisDevice) -> None:
+        # Detected from the BLE replies, after MQTT may already have connected
+        client.legacy_firmware = legacy
+
+    client.async_get_all = AsyncMock(side_effect=_get_all)
+    mock_mqtt_client.async_get_all = AsyncMock()
+
+    await coordinator._async_ble_sync(client, device)
+
+    assert mock_mqtt_client.async_get_all.await_count == int(refreshed)

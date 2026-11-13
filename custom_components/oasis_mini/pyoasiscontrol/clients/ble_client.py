@@ -108,8 +108,9 @@ class OasisBleClient(OasisClientProtocol):
         self._write_lock = asyncio.Lock()
         self._last_write = 0.0
         self._closing = False
-        # Bumped by async_close so a connection completing afterwards is dropped
-        self._close_count = 0
+        # Set by async_close; a closed client never connects again (the coordinator
+        # creates a new client instead), even for attempts already queued
+        self._closed = False
 
         self._waiters: dict[str, list[asyncio.Future[dict[str, Any]]]] = {}
         self._rx_buffer = ""
@@ -150,16 +151,19 @@ class OasisBleClient(OasisClientProtocol):
         """
         if self.is_connected:
             return
+        if self._closed:
+            raise BleakError(f"Oasis device {self.address} was closed")
 
         async with self._connect_lock:
             if self.is_connected:
                 return
+            if self._closed:
+                raise BleakError(f"Oasis device {self.address} was closed")
 
             if not (ble_device := self._ble_device_callback()):
                 raise BleakError(f"Oasis device {self.address} not found")
 
             self._closing = False
-            close_count = self._close_count
             _LOGGER.debug("Connecting to Oasis BLE device %s", self.address)
             client = await establish_connection(
                 BleakClientWithServiceCache,
@@ -172,7 +176,7 @@ class OasisBleClient(OasisClientProtocol):
                 await client.start_notify(
                     OASIS_CHARACTERISTIC_UUID, self._handle_notification
                 )
-                if self._close_count != close_count:
+                if self._closed:
                     raise BleakError(f"Oasis device {self.address} was closed")
             except BaseException:
                 # Includes cancellation, so a half-made connection is never left up
@@ -187,7 +191,7 @@ class OasisBleClient(OasisClientProtocol):
     async def async_close(self) -> None:
         """Disconnect from the device."""
         self._closing = True
-        self._close_count += 1
+        self._closed = True
         client, self._client = self._client, None
         self._fail_waiters(BleakError(f"Oasis device {self.address} was closed"))
         if client is not None and client.is_connected:
@@ -239,16 +243,18 @@ class OasisBleClient(OasisClientProtocol):
             BleakError: If the device cannot be reached.
         """
         await self.async_connect()
-        assert self._client is not None
-
-        future: asyncio.Future[dict[str, Any]] | None = None
-        if response:
-            future = asyncio.get_running_loop().create_future()
-            self._waiters.setdefault(response, []).append(future)
-
         data = json.dumps(payload, separators=(",", ":")).encode()
-        try:
-            async with self._write_lock:
+
+        # One request at a time, from write to reply: a reply resolves every waiter
+        # for its command, so overlapping requests would take each other's replies
+        async with self._write_lock:
+            if self._client is None:
+                raise BleakError(f"Oasis device {self.address} disconnected")
+            future: asyncio.Future[dict[str, Any]] | None = None
+            if response:
+                future = asyncio.get_running_loop().create_future()
+                self._waiters.setdefault(response, []).append(future)
+            try:
                 if (
                     delay := WRITE_MIN_INTERVAL - (time.monotonic() - self._last_write)
                 ) > 0:
@@ -259,17 +265,19 @@ class OasisBleClient(OasisClientProtocol):
                 )
                 self._last_write = time.monotonic()
 
-            if future is None:
-                return None
-            try:
-                async with asyncio.timeout(timeout):
-                    return await future
-            except TimeoutError:
-                _LOGGER.debug("No BLE response for %s from %s", response, self.address)
-                return None
-        finally:
-            if future is not None and future in self._waiters.get(response, ()):
-                self._waiters[response].remove(future)
+                if future is None:
+                    return None
+                try:
+                    async with asyncio.timeout(timeout):
+                        return await future
+                except TimeoutError:
+                    _LOGGER.debug(
+                        "No BLE response for %s from %s", response, self.address
+                    )
+                    return None
+            finally:
+                if future is not None and future in self._waiters.get(response, ()):
+                    self._waiters[response].remove(future)
 
     async def _async_command(self, command: str, **fields: str) -> None:
         """
