@@ -57,7 +57,7 @@
         "name": "Busy"
       },
       "responding": {
-        "name": "Responding"
+        "name": "Connection"
       },
       "wifi_status": {
         "name": "Wi-Fi status"
@@ -100,7 +100,7 @@
     },
     "sensor": {
       "connection": {
-        "name": "Connection",
+        "name": "Connection type",
         "state": {
           "bluetooth": "Bluetooth",
           "cloud": "Cloud",

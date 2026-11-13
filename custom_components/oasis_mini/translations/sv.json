@@ -57,7 +57,7 @@
         "name": "Upptagen"
       },
       "responding": {
-        "name": "Svarar"
+        "name": "Anslutning"
       },
       "wifi_status": {
         "name": "Wi-Fi status"
@@ -100,7 +100,7 @@
     },
     "sensor": {
       "connection": {
-        "name": "Anslutning",
+        "name": "Anslutningstyp",
         "state": {
           "bluetooth": "Bluetooth",
           "cloud": "Moln",

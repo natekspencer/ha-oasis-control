@@ -66,9 +66,9 @@ The integration talks to each Oasis over the best connection available, in this 
 2. **Bluetooth** – used when HTTP isn't available and the table is in range of Home Assistant's Bluetooth (on by default).
 3. **Cloud (MQTT)** – the last resort; requires **Remote access** to be active on the device.
 
-It switches automatically as connections come and go. The **Connection** diagnostic sensor on each device shows which one is in use (`Local network`, `Bluetooth`, `Cloud` or `Disconnected`).
+It switches automatically as connections come and go. The **Connection type** diagnostic sensor on each device shows which one is in use (`Local network`, `Bluetooth`, `Cloud` or `Disconnected`).
 
-The **Responding** diagnostic sensor shows whether the table has answered recently over any of these. It turns off when nothing has been heard from the table for 3 minutes, and only changes state when that happens, so it suits alerts and automations.
+The **Connection** diagnostic sensor shows whether the table has answered recently over any of these. It turns to `Disconnected` when nothing has been heard from the table for 3 minutes, and only changes state when that happens, so it suits alerts and automations.
 
 If the Oasis cloud is down, tables that were set up before keep working over the local network and Bluetooth, including after a Home Assistant restart. Track images and names that come from the cloud may be missing until it's back.
 
