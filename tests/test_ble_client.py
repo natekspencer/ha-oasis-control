@@ -519,3 +519,23 @@ async def test_late_reply_during_pacing_not_taken(
     _notify(client, {"command": "GETSTATUS", "st": "4"})
     reply = await task
     assert reply == {"command": "GETSTATUS", "st": "4"}
+
+
+async def test_failed_resync_clears_synced(
+    client: OasisBleClient,
+    device: OasisDevice,
+    responses: dict[str, Responder],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A re-sync that fails leaves the client unsynced, even if it was synced."""
+    responses["GETSTATUS"] = lambda _: [{"command": "GETSTATUS", "st": "2"}]
+    responses["GETPLAYLIST"] = lambda _: _playlist_push("GETPLAYLIST", [101])
+    await client.async_get_all(device)
+    assert client.synced
+
+    monkeypatch.setattr(ble_client, "PLAYLIST_TIMEOUT", 0.01)
+    del responses["GETPLAYLIST"]
+    with pytest.raises(TimeoutError):
+        await client.async_get_all(device)
+
+    assert not client.synced

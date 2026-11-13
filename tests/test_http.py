@@ -471,6 +471,7 @@ async def test_reply_from_previous_host_ignored(
 
     aioclient_mock.clear_requests()
     aioclient_mock.get(BASE_URL, side_effect=_reply)
+    client._connected = True  # Previously connected at the old address
 
     with pytest.raises(ValueError, match="moved"):
         await client.async_get_status(device)
@@ -494,3 +495,48 @@ async def test_version_fetched_when_status_lacks_it(
 
     assert device.software_version == "2.80"
     assert device.is_initialized
+
+
+async def test_mac_and_status_must_come_from_same_host(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    init_integration: MockConfigEntry,
+) -> None:
+    """A MAC from one address can't vouch for status from another."""
+    mock_device_offline(aioclient_mock)
+    coordinator = await setup(hass, init_integration)
+    client = coordinator.http_clients[SERIAL_NUMBER]
+    device = coordinator.data[0]
+
+    async def _reply(method: str, url: URL, data: Any) -> AiohttpClientMockResponse:
+        if next(iter(url.query)) == "GETMAC":
+            client.host = "10.0.0.99"  # Moved right after identifying itself
+            return AiohttpClientMockResponse(method, url, text=MAC, headers=TEXT)
+        return AiohttpClientMockResponse(method, url, text=STATUS, headers=TEXT)
+
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(BASE_URL, side_effect=_reply)
+
+    with pytest.raises(ValueError, match="moved"):
+        await client.async_get_all(device)
+    assert not client.is_connected
+    assert client.last_status is None
+    assert device.mac_address is None
+
+
+async def test_known_device_must_confirm_identity(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    init_integration: MockConfigEntry,
+    mock_mqtt_client: MagicMock,
+) -> None:
+    """A device with a known MAC isn't used if the address doesn't report one."""
+    device = init_integration.runtime_data.data[0]
+    device.update_from_status_dict({"mac_address": MAC})
+    mock_device_replies(
+        aioclient_mock, {"GETSTATUS": STATUS, "GETMAC": "", "GETSCH": "{}"}
+    )
+    coordinator = await setup(hass, init_integration)
+
+    assert not coordinator.http_clients[SERIAL_NUMBER].is_connected
+    assert device.client is mock_mqtt_client

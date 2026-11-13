@@ -529,6 +529,9 @@ class OasisBleClient(OasisClientProtocol):
         Mirrors the app's BLE initialization sequence. Legacy firmware that does not
         support GETSTATUS/GETPLAYLIST over BLE only reports identity and Wi-Fi state.
         """
+        # Cleared first, so a sync that fails partway is retried even if an earlier
+        # one had completed
+        self.synced = False
         if not device.mac_address:
             await self._async_send({"command": "GETMAC"}, "GETMAC")
         await self._async_send({"command": "GETSOFTWAREVER"}, "GETSOFTWAREVER")

@@ -372,7 +372,20 @@ class OasisHttpClient(OasisClientProtocol):
         """
         await self._async_command(params={"CMDBOOT": ""})
 
-    async def async_get_status(self, device: OasisDevice) -> None:
+    def _check_host(self, host: str) -> None:
+        """Reject a reply if the device has moved away from the host it came from.
+
+        Raises:
+            ValueError: If the device's address is no longer `host`.
+        """
+        if self.host != host:
+            # The reply is from an address that may now belong to something else
+            self._connected = False
+            raise ValueError(f"Device moved from {host} to {self.host}")
+
+    async def async_get_status(
+        self, device: OasisDevice, *, host: str | None = None
+    ) -> None:
         """
         Retrieve the device status from the device and apply it to the given OasisDevice.
 
@@ -380,13 +393,13 @@ class OasisHttpClient(OasisClientProtocol):
 
         Parameters:
             device (OasisDevice): Device instance to update with the fetched status.
+            host (str | None): Host the status must come from (e.g. the one whose
+                identity was just checked); defaults to the current host.
         """
-        host = self.host
+        host = host or self.host
+        self._check_host(host)
         raw_status = await self._async_get(params={"GETSTATUS": ""})
-        if self.host != host:
-            # The device moved while this was in flight; the reply is from an
-            # address that may now belong to something else
-            raise ValueError(f"Device moved from {host} to {self.host}")
+        self._check_host(host)
         # A non-text reply, or text that isn't a status string, isn't the device
         status = (
             device.parse_status_string(raw_status)
@@ -412,21 +425,25 @@ class OasisHttpClient(OasisClientProtocol):
         the device isn't initialized without both. The schedule is optional.
 
         Raises:
-            ValueError: If the address answers as a different device.
+            ValueError: If the address answers as a different device, doesn't
+                confirm its identity, or the device moves during the sync.
         """
+        # The MAC and status must both come from this host, so a MAC from one
+        # address can't vouch for status from another
+        host = self.host
         mac = await self._async_get(params={"GETMAC": ""})
+        self._check_host(host)
         mac = mac.strip() if isinstance(mac, str) else ""
-        if (
-            mac
-            and device.mac_address
-            and _normalize_mac(mac) != _normalize_mac(device.mac_address)
+        if device.mac_address and (
+            not mac or _normalize_mac(mac) != _normalize_mac(device.mac_address)
         ):
+            # A known device must positively identify itself before it's used
             self._connected = False
             raise ValueError(
-                f"{self.host} is now a different device ({mac}, expected "
+                f"{host} is not the expected device ({mac or 'no MAC'}, expected "
                 f"{device.mac_address})"
             )
-        await self.async_get_status(device)
+        await self.async_get_status(device, host=host)
         if mac and not device.mac_address:
             device.update_from_status_dict({"mac_address": mac}, source=self)
         if not device.software_version:
