@@ -358,3 +358,65 @@ async def test_overlapping_requests_get_their_own_replies(
     _notify(client, {"command": "GETSTATUS", "st": "5"})
     await second
     assert device.status_code == 5
+
+
+async def test_set_playlist_ignores_stale_push(
+    client: OasisBleClient, device: OasisDevice
+) -> None:
+    """A push of the old playlist doesn't complete a replacement."""
+    task = asyncio.create_task(client.async_send_set_playlist_command(device, [7, 8]))
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    for message in _playlist_push("GETPLAYLIST_PUSH", [1, 2]):
+        _notify(client, message)
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not task.done()
+
+    for message in _playlist_push("GETPLAYLIST_PUSH", [7, 8]):
+        _notify(client, message)
+    await task
+    assert device.playlist == [7, 8]
+
+
+async def test_set_playlist_timeout_raises(
+    client: OasisBleClient, device: OasisDevice, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A replacement the device never confirms fails instead of succeeding."""
+    monkeypatch.setattr(ble_client, "PLAYLIST_WRITE_TIMEOUT", 0.01)
+
+    with pytest.raises(TimeoutError):
+        await client.async_send_set_playlist_command(device, [7, 8])
+
+
+async def test_set_playlist_disconnect_raises(
+    client: OasisBleClient, device: OasisDevice
+) -> None:
+    """A disconnect while waiting for the new playlist fails the replacement."""
+    task = asyncio.create_task(client.async_send_set_playlist_command(device, [7]))
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    client._handle_disconnect(MagicMock())
+
+    with pytest.raises(ble_client.BleakError):
+        await task
+
+
+async def test_disconnect_during_write_pacing(
+    client: OasisBleClient, device: OasisDevice, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A disconnect while spacing writes apart raises BleakError, not a crash."""
+    monkeypatch.setattr(ble_client, "WRITE_MIN_INTERVAL", 0.05)
+    client._last_write = ble_client.time.monotonic()
+    connection = client._client
+    task = asyncio.create_task(client.async_get_status(device))
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    client._handle_disconnect(MagicMock())
+
+    with pytest.raises(ble_client.BleakError):
+        await task
+    connection.write_gatt_char.assert_not_awaited()

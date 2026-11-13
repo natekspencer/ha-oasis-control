@@ -170,3 +170,28 @@ async def test_disabled_device_not_kept_connected(
     client.async_close.assert_awaited_once()
     assert ADDRESS not in coordinator.ble_clients
     assert coordinator._ble_disabled == {ADDRESS: SERIAL_NUMBER}
+
+
+async def test_bluetooth_switch_available_while_refresh_fails(
+    hass: HomeAssistant,
+    init_integration: MockConfigEntry,
+    mock_cloud_client: MagicMock,
+) -> None:
+    """Bluetooth is local, so its switch works while the cloud refresh fails."""
+    coordinator = init_integration.runtime_data
+    coordinator.last_update_success = False
+    coordinator.async_update_listeners()
+    await hass.async_block_till_done()
+
+    state = hass.states.get(bluetooth_entity_id(hass))
+    assert state
+    assert state.state == STATE_ON
+
+    with patch.object(coordinator, "async_set_bluetooth_enabled") as mock_set:
+        await hass.services.async_call(
+            SWITCH_DOMAIN,
+            SERVICE_TURN_OFF,
+            {ATTR_ENTITY_ID: bluetooth_entity_id(hass)},
+            blocking=True,
+        )
+    mock_set.assert_awaited_once()

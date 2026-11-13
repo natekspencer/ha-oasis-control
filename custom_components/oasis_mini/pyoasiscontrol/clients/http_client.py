@@ -50,7 +50,11 @@ class OasisHttpClient(OasisClientProtocol):
 
     @property
     def is_connected(self) -> bool:
-        """Return `True` if the last request to the device succeeded."""
+        """Return `True` if the device last answered GETSTATUS with a valid status.
+
+        Any other answer (e.g. a router's web page after the IP was reassigned)
+        doesn't count, so HTTP is never chosen for something that isn't the device.
+        """
         return self._connected
 
     @property
@@ -113,16 +117,13 @@ class OasisHttpClient(OasisClientProtocol):
             resp = await session.request(method, url, **kwargs)
             resp.raise_for_status()
             if resp.content_type == "text/plain":
-                result = await resp.text()
-            elif resp.content_type == "application/json":
-                result = await resp.json()
-            else:
-                result = None
+                return await resp.text()
+            if resp.content_type == "application/json":
+                return await resp.json()
+            return None
         except Exception:
             self._connected = False
             raise
-        self._connected = True
-        return result
 
     async def _async_get(self, **kwargs: Any) -> str | None:
         """
@@ -369,11 +370,19 @@ class OasisHttpClient(OasisClientProtocol):
             device (OasisDevice): Device instance to update with the fetched status.
         """
         raw_status = await self._async_get(params={"GETSTATUS": ""})
-        if raw_status is None:
-            return
+        # A non-text reply, or text that isn't a status string, isn't the device
+        status = (
+            device.parse_status_string(raw_status)
+            if isinstance(raw_status, str) and ";" in raw_status
+            else None
+        )
+        if status is None:
+            self._connected = False
+            raise ValueError(f"Invalid status from {self.host}: {raw_status!r:.100}")
 
         _LOGGER.debug("Status for %s: %s", device.serial_number, raw_status)
-        device.update_from_status_string(raw_status, source=self)
+        self._connected = True
+        device.update_from_status_dict(status, source=self)
 
     async def async_get_all(self, device: OasisDevice) -> None:
         """

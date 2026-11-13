@@ -712,6 +712,11 @@ class OasisDevice:
             start_playing = self.status_code == STATUS_PLAYING
 
         client = self._require_client()
+        # Checked before stopping, so an oversized playlist leaves playback alone
+        if (limit := getattr(client, "max_playlist_size", None)) and len(
+            playlist
+        ) > limit:
+            raise ValueError(f"Playlists are limited to {limit} tracks")
         await client.async_send_stop_command(self)  # needed before replacing playlist
         await client.async_send_set_playlist_command(self, playlist)
         if start_playing and playlist:

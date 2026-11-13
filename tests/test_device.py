@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -91,3 +91,16 @@ def test_status_string_from_other_transport_respects_owner() -> None:
 
     assert device.status_code == 4
     assert device.ball_speed == 300
+
+
+async def test_oversized_playlist_rejected_before_stopping() -> None:
+    """A playlist too long for the transport is refused without stopping playback."""
+    device = OasisDevice(model="Oasis Mini", serial_number="OM1")
+    client = MagicMock(max_playlist_size=40)
+    client.async_send_stop_command = AsyncMock()
+    device.attach_client(client)
+
+    with pytest.raises(ValueError, match="40"):
+        await device.async_set_playlist(list(range(1, 42)))
+
+    client.async_send_stop_command.assert_not_awaited()

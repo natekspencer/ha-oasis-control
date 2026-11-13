@@ -185,6 +185,9 @@ async def test_failed_refresh_stops_polling_discarded_devices(
 
     assert [d.serial_number for d in coordinator.data] == [SERIAL_NUMBER]
     assert "OM-NEW" not in coordinator.http_clients
+    # Registered with MQTT before the failure, so it's unregistered again
+    (unregistered,) = mock_mqtt_client.unregister_device.call_args.args
+    assert unregistered.serial_number == "OM-NEW"
 
 
 async def test_cancelled_ble_probe_closes_client(
@@ -269,3 +272,59 @@ async def test_ble_sync_refreshes_legacy_firmware_over_mqtt(
     await coordinator._async_ble_sync(client, device)
 
     assert mock_mqtt_client.async_get_all.await_count == int(refreshed)
+
+
+@pytest.mark.parametrize("device_status", [{}])
+async def test_ble_poll_retries_sync_until_initialized(
+    hass: HomeAssistant, init_integration: MockConfigEntry
+) -> None:
+    """A missed identity reply is retried by the poll, without reconnecting."""
+    coordinator = init_integration.runtime_data
+    device = coordinator.data[0]
+    client = _ble_client()
+    client.async_connect = AsyncMock()
+
+    async def _get_all(_device: OasisDevice) -> None:
+        device.update_from_status_dict(
+            {"mac_address": "aa:bb:cc:dd:ee:ff", "software_version": "3.54"}
+        )
+
+    client.async_get_all = AsyncMock(side_effect=_get_all)
+    device.attach_client(client)
+    assert not device.is_initialized
+
+    coordinator._async_ble_poll()
+    await hass.async_block_till_done()
+    assert device.is_initialized
+    client.async_get_status.assert_not_awaited()
+
+    # Once initialized, the poll is back to plain status requests
+    coordinator._async_ble_poll()
+    await hass.async_block_till_done()
+    client.async_get_status.assert_awaited_once_with(device)
+    assert client.async_get_all.await_count == 1
+    client.async_connect.assert_not_awaited()
+
+
+async def test_probe_completing_during_shutdown_not_kept(
+    hass: HomeAssistant, init_integration: MockConfigEntry
+) -> None:
+    """A probe that identifies its device after shutdown began disconnects it."""
+    coordinator = init_integration.runtime_data
+    client = _ble_client(serial_number=SERIAL_NUMBER)
+    client.async_close = AsyncMock()
+    client.async_get_serial_number = AsyncMock(return_value=SERIAL_NUMBER)
+    await coordinator.async_close()
+
+    with (
+        patch(
+            "custom_components.oasis_mini.coordinator.OasisBleClient",
+            return_value=client,
+        ),
+        patch.object(coordinator, "_async_ble_retry", AsyncMock(return_value=True)),
+        patch("homeassistant.components.bluetooth.async_ble_device_from_address"),
+    ):
+        await coordinator._async_probe_ble(client.address)
+
+    client.async_close.assert_awaited_once()
+    assert coordinator.ble_clients == {}

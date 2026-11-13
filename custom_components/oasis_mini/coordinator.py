@@ -127,6 +127,9 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         # Track which devices are currently considered initialized
         self._initialized_serials: set[str] = set()
 
+        # Set once async_close starts, so in-flight probes can't add BLE clients
+        self._shutting_down = False
+
     @property
     def _device_initialized_signal(self) -> str:
         """Dispatcher signal name for device initialization events."""
@@ -329,6 +332,8 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
                 continue
             self._cloud_ips.pop(serial, None)
             self._async_stop_http(serial)
+            # It may already be registered, and MQTT would otherwise initialize it
+            self.mqtt_client.unregister_device(device)
         return published
 
     async def async_load_device_cache(self) -> None:
@@ -568,8 +573,12 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
                 if was_connected:
                     was_connected = False
                     fallback = self._async_select_client(device)
-                    with contextlib.suppress(Exception):
-                        await fallback.async_get_all(device)
+                    # In the background, so a slow fallback never delays HTTP retries
+                    self.config_entry.async_create_background_task(
+                        self.hass,
+                        self._async_sync_quietly(fallback, device),
+                        f"{DOMAIN} fallback sync {device.serial_number}",
+                    )
                 delay: float = HTTP_RETRY_INTERVAL
             else:
                 was_connected = True
@@ -582,6 +591,20 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
                     await refresh.wait()
             if refresh.is_set():
                 await asyncio.sleep(HTTP_COMMAND_REFRESH_DELAY)
+
+    @staticmethod
+    async def _async_sync_quietly(
+        client: OasisClientProtocol, device: OasisDevice
+    ) -> None:
+        """Fetch a device's full state over a transport, logging any error."""
+        try:
+            await client.async_get_all(device)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug(
+                "Error syncing Oasis device %s after a transport change: %s",
+                device.serial_number,
+                err,
+            )
 
     @callback
     def async_setup_bluetooth(self) -> None:
@@ -636,8 +659,10 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
             if (
                 not isinstance(client, OasisBleClient)
                 or not client.is_connected
-                or client.legacy_firmware
                 or client.address in self._ble_polling
+                # Legacy firmware has no GETSTATUS over BLE, but may still need its
+                # identity fetched
+                or (client.legacy_firmware and device.is_initialized)
             ):
                 continue
             self._ble_polling.add(client.address)
@@ -650,9 +675,16 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
     async def _async_ble_poll_device(
         self, client: OasisBleClient, device: OasisDevice
     ) -> None:
-        """Request a device's status over BLE, logging rather than raising errors."""
+        """Request a device's status over BLE, logging rather than raising errors.
+
+        Until the device is initialized (a reply to the initial sync was missed),
+        the full sync is retried instead, over the same connection.
+        """
         try:
-            await client.async_get_status(device)
+            if device.is_initialized:
+                await client.async_get_status(device)
+            else:
+                await client.async_get_all(device)
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug(
                 "Error polling status over BLE from %s: %s", client.address, err
@@ -742,6 +774,11 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
                 address,
             )
             self._ble_disabled[address] = serial
+            await client.async_close()
+            return
+
+        if self._shutting_down:
+            # async_close has already closed the clients it knows about
             await client.async_close()
             return
 
@@ -877,6 +914,7 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
 
     async def async_close(self) -> None:
         """Close client connections."""
+        self._shutting_down = True
         for serial in list(self._http_tasks):
             self._async_stop_http(serial)
         for task in self._ble_reconnect_tasks.values():

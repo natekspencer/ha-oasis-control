@@ -116,6 +116,15 @@ class OasisDeviceBluetoothSwitchEntity(OasisDeviceEntity, SwitchEntity):
     """
 
     @property
+    def available(self) -> bool:
+        """Return whether the device is still on the account.
+
+        Bluetooth is local, so this doesn't follow the cloud refresh like other
+        entities: it stays usable while the refresh fails (e.g. during reauth).
+        """
+        return any(d is self.device for d in self.coordinator.data or [])
+
+    @property
     def is_on(self) -> bool:
         """Return whether Bluetooth may be used for this device."""
         return self.coordinator.bluetooth_enabled(self.device.serial_number)

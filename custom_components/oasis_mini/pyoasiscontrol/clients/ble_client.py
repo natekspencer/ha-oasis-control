@@ -31,6 +31,8 @@ COMMAND_TIMEOUT: Final = 3.0
 PLAYLIST_TIMEOUT: Final = 10.0
 # The app waits this long for the playlist to sync back after writing it
 PLAYLIST_WRITE_TIMEOUT: Final = 20.0
+# The app's playlist limit; WRIJOBLIST is sent as a single write
+MAX_PLAYLIST_SIZE: Final = 40
 
 # Commands whose notifications carry device status fields
 _STATUS_COMMANDS: Final = ("GETSTATUS", "LINESTATUS", "DOWNLOADSTATUS")
@@ -115,9 +117,13 @@ class OasisBleClient(OasisClientProtocol):
         self._waiters: dict[str, list[asyncio.Future[dict[str, Any]]]] = {}
         self._rx_buffer = ""
         self._playlist: dict[int, int] = {}
-        self._playlist_done: asyncio.Event = asyncio.Event()
+        # Completed by the playlist transfer a sync is waiting for (see
+        # _async_sync_playlist); failed on disconnect
+        self._playlist_waiter: asyncio.Future[list[int]] | None = None
+        self._playlist_expected: list[int] | None = None
         # One playlist transfer at a time, so they can't take each other's completion
         self._playlist_lock = asyncio.Lock()
+        self._legacy_warned = False
 
         self.serial_number: str | None = None
         self.legacy_firmware = False
@@ -128,6 +134,11 @@ class OasisBleClient(OasisClientProtocol):
     def is_connected(self) -> bool:
         """Return True if the BLE link is up."""
         return self._client is not None and self._client.is_connected
+
+    @property
+    def max_playlist_size(self) -> int:
+        """Largest playlist that can be written over BLE."""
+        return MAX_PLAYLIST_SIZE
 
     @property
     def status_fields(self) -> frozenset[str]:
@@ -211,12 +222,14 @@ class OasisBleClient(OasisClientProtocol):
             self._on_disconnect()
 
     def _fail_waiters(self, err: BleakError) -> None:
-        """Fail all pending response waiters with the given error."""
+        """Fail all pending response waiters, and any playlist sync, with the error."""
         for futures in self._waiters.values():
             for future in futures:
                 if not future.done():
                     future.set_exception(err)
         self._waiters.clear()
+        if self._playlist_waiter is not None and not self._playlist_waiter.done():
+            self._playlist_waiter.set_exception(err)
 
     # ------------------------------------------------------------------ #
     # Low-level I/O
@@ -259,6 +272,8 @@ class OasisBleClient(OasisClientProtocol):
                     delay := WRITE_MIN_INTERVAL - (time.monotonic() - self._last_write)
                 ) > 0:
                     await asyncio.sleep(delay)
+                    if self._client is None:
+                        raise BleakError(f"Oasis device {self.address} disconnected")
                 _LOGGER.debug("BLE write %s => %s", self.address, data.decode())
                 await self._client.write_gatt_char(
                     OASIS_CHARACTERISTIC_UUID, data, response=True
@@ -276,8 +291,16 @@ class OasisBleClient(OasisClientProtocol):
                     )
                     return None
             finally:
-                if future is not None and future in self._waiters.get(response, ()):
-                    self._waiters[response].remove(future)
+                if future is not None:
+                    if future in self._waiters.get(response, ()):
+                        self._waiters[response].remove(future)
+                    # Don't leave an error set by _fail_waiters unretrieved when the
+                    # write itself failed first
+                    if future.done():
+                        if not future.cancelled():
+                            future.exception()
+                    else:
+                        future.cancel()
 
     async def _async_command(self, command: str, **fields: str) -> None:
         """
@@ -415,14 +438,22 @@ class OasisBleClient(OasisClientProtocol):
             if isinstance(job, dict) and _has_value(job.get("idx")):
                 self._playlist[_parse_int(job["idx"])] = _parse_int(job.get("id"))
             if part == "end":
-                data["playlist"] = [
+                playlist = [
                     track_id
                     for _, track_id in sorted(self._playlist.items())
                     if track_id
                 ]
+                data["playlist"] = playlist
                 # An empty transfer must not republish this one's entries
                 self._playlist = {}
-                self._playlist_done.set()
+                # A sync for a written playlist only completes once the device
+                # reports that playlist, not an earlier one still in flight
+                if (
+                    (waiter := self._playlist_waiter) is not None
+                    and not waiter.done()
+                    and self._playlist_expected in (None, playlist)
+                ):
+                    waiter.set_result(playlist)
 
         if data and self._device is not None:
             self._device.update_from_status_dict(data, source=self)
@@ -466,10 +497,12 @@ class OasisBleClient(OasisClientProtocol):
         await self._async_send({"command": "WIFISTATUS"}, "WIFISTATUS")
         await self._async_send({"command": "GETSTATUS"}, "GETSTATUS")
         if self.legacy_firmware:
-            _LOGGER.warning(
-                "Oasis %s firmware does not report status over BLE",
-                device.serial_number,
-            )
+            if not self._legacy_warned:
+                self._legacy_warned = True
+                _LOGGER.warning(
+                    "Oasis %s firmware does not report status over BLE",
+                    device.serial_number,
+                )
             return
 
         await self._async_sync_playlist(
@@ -477,18 +510,39 @@ class OasisBleClient(OasisClientProtocol):
         )
 
     async def _async_sync_playlist(
-        self, payload: dict[str, Any], timeout: float
+        self,
+        payload: dict[str, Any],
+        timeout: float,
+        expected: list[int] | None = None,
     ) -> None:
-        """Send a command and wait for the device to push its full playlist back."""
+        """Send a command and wait for the device to push its full playlist back.
+
+        With `expected`, only a transfer of that playlist completes the sync, so a
+        push of the previous playlist arriving meanwhile isn't taken as the result.
+
+        Raises:
+            TimeoutError: If the playlist isn't pushed back in time.
+            BleakError: If the device disconnects first.
+        """
         async with self._playlist_lock:
             self._playlist = {}
-            self._playlist_done.clear()
-            await self._async_send(payload)
+            waiter = asyncio.get_running_loop().create_future()
+            self._playlist_waiter = waiter
+            self._playlist_expected = expected
             try:
+                await self._async_send(payload)
                 async with asyncio.timeout(timeout):
-                    await self._playlist_done.wait()
+                    await waiter
             except TimeoutError:
                 _LOGGER.debug("Timed out syncing playlist from %s", self.address)
+                raise
+            finally:
+                self._playlist_waiter = None
+                self._playlist_expected = None
+                if waiter.done() and not waiter.cancelled():
+                    waiter.exception()
+                else:
+                    waiter.cancel()
 
     # ------------------------------------------------------------------ #
     # Commands
@@ -560,7 +614,11 @@ class OasisBleClient(OasisClientProtocol):
         if self.legacy_firmware:
             await self._async_send(payload)
         else:
-            await self._async_sync_playlist(payload, PLAYLIST_WRITE_TIMEOUT)
+            await self._async_sync_playlist(
+                payload,
+                PLAYLIST_WRITE_TIMEOUT,
+                expected=[track_id for track_id in playlist if track_id],
+            )
 
     async def async_send_set_repeat_playlist_command(
         self, device: OasisDevice, repeat: bool

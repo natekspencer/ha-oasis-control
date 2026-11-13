@@ -309,3 +309,50 @@ async def test_same_address_rechecks_http_right_away(
     await hass.async_block_till_done()
 
     assert isinstance(device.client, OasisHttpClient)
+
+
+async def test_html_reply_is_not_the_device(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    init_integration: MockConfigEntry,
+    mock_mqtt_client: MagicMock,
+) -> None:
+    """Something else answering on the device's IP (e.g. a router) isn't used."""
+    aioclient_mock.clear_requests()
+    aioclient_mock.get(
+        BASE_URL,
+        text="<html>Router login</html>",
+        headers={"content-type": "text/html"},
+    )
+    coordinator = await setup(hass, init_integration)
+
+    assert not coordinator.http_clients[SERIAL_NUMBER].is_connected
+    assert coordinator.data[0].client is mock_mqtt_client
+
+
+async def test_slow_fallback_sync_does_not_block_http_retry(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    init_integration: MockConfigEntry,
+    mock_mqtt_client: MagicMock,
+) -> None:
+    """HTTP is retried, and used again, while the fallback is still syncing."""
+    mock_device(aioclient_mock)
+    coordinator = await setup(hass, init_integration)
+    device = coordinator.data[0]
+    stuck = asyncio.Event()
+
+    async def _stuck_sync(_device: object) -> None:
+        await stuck.wait()
+
+    mock_mqtt_client.async_get_all = AsyncMock(side_effect=_stuck_sync)
+
+    mock_device_offline(aioclient_mock)
+    await poll(hass, coordinator)
+    assert device.client is mock_mqtt_client
+    mock_mqtt_client.async_get_all.assert_called_once()
+
+    mock_device(aioclient_mock)
+    await poll(hass, coordinator)
+    assert isinstance(device.client, OasisHttpClient)
+    stuck.set()
