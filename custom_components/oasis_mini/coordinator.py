@@ -62,18 +62,31 @@ def device_cache_store(hass: HomeAssistant, entry_id: str) -> Store[dict[str, An
     return Store(hass, STORAGE_VERSION, f"{DOMAIN}.{entry_id}.devices")
 
 
-async def async_save_discovered_host(
+@callback
+def _device_cache_lock(hass: HomeAssistant, entry_id: str) -> asyncio.Lock:
+    """Return the lock serializing an entry's cache load with discovery saves."""
+    locks: dict[str, asyncio.Lock] = hass.data.setdefault(f"{DOMAIN}_cache_locks", {})
+    return locks.setdefault(entry_id, asyncio.Lock())
+
+
+async def async_add_discovered_host(
     hass: HomeAssistant, entry_id: str, serial: str, host: str
 ) -> None:
-    """Keep an address found (e.g. by DHCP) while the entry isn't loaded.
+    """Use an address found (e.g. by DHCP) for a device of an entry.
 
-    The entry applies it at its next setup, since the same sighting isn't
-    reported again.
+    The entry's coordinator gets it if one exists (the entry is loaded or setting
+    up). Otherwise it's saved for the next setup, since the same sighting isn't
+    reported again. Both happen under the lock the coordinator loads its cache
+    with, so a coordinator created meanwhile either receives it or reads it.
     """
-    store = device_cache_store(hass, entry_id)
-    data = await store.async_load() or {}
-    data.setdefault("hosts", {})[serial] = host
-    await store.async_save(data)
+    async with _device_cache_lock(hass, entry_id):
+        if (coordinator := async_get_coordinator(hass, entry_id)) is not None:
+            coordinator.async_add_discovered_host(serial, host)
+            return
+        store = device_cache_store(hass, entry_id)
+        data = await store.async_load() or {}
+        data.setdefault("hosts", {})[serial] = host
+        await store.async_save(data)
 
 
 # BLE connection retry backoff: starts at BLE_RECONNECT_DELAY seconds and doubles
@@ -456,7 +469,9 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
 
     async def async_load_device_cache(self) -> None:
         """Load the cached device list, and any addresses discovered meanwhile."""
-        if (data := await self._store.async_load()) is not None:
+        async with _device_cache_lock(self.hass, self.config_entry.entry_id):
+            data = await self._store.async_load()
+        if data is not None:
             if "devices" in data:
                 self._device_cache = data["devices"]
             # Merged, so an address handed over before this load is kept

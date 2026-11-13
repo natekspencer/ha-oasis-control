@@ -21,7 +21,7 @@ from homeassistant.helpers.selector import (
 from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 
 from .const import DOMAIN
-from .coordinator import async_get_coordinator, async_save_discovered_host
+from .coordinator import async_add_discovered_host
 from .helpers import create_client
 from .pyoasiscontrol import OasisCloudClient, UnauthenticatedError
 
@@ -79,14 +79,10 @@ class OasisDeviceConfigFlow(ConfigFlow, domain=DOMAIN):
             # Home Assistant doesn't report the same sighting again, so it's handed
             # to the entry's coordinator while it's loaded or setting up, and kept
             # for its next setup otherwise
-            coordinator = async_get_coordinator(self.hass, entry.entry_id)
             for serial in serials:
-                if coordinator is not None:
-                    coordinator.async_add_discovered_host(serial, discovery_info.ip)
-                else:
-                    await async_save_discovered_host(
-                        self.hass, entry.entry_id, serial, discovery_info.ip
-                    )
+                await async_add_discovered_host(
+                    self.hass, entry.entry_id, serial, discovery_info.ip
+                )
         return self.async_abort(reason="already_configured")
 
     async def async_step_reauth(

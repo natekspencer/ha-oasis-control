@@ -20,6 +20,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers import device_registry as dr, entity_registry as er
 from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
+from homeassistant.helpers.storage import Store
 
 from .common import AiohttpClientMocker, AiohttpClientMockResponse, MockConfigEntry
 from .conftest import SERIAL_NUMBER
@@ -669,3 +670,67 @@ async def test_dhcp_address_during_setup_is_handed_over(
     coordinator = mock_config_entry.runtime_data
     assert coordinator.http_clients[SERIAL_NUMBER].host == NEW_HOST
     assert coordinator._pending_hosts == {}
+
+
+async def test_dhcp_save_overlapping_setup_is_not_lost(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    mock_config_entry: MockConfigEntry,
+    mock_cloud_client: MagicMock,
+    mock_mqtt_client: MagicMock,
+    platforms: list[Platform],
+) -> None:
+    """Setup starting while a DHCP sighting is being saved still picks it up."""
+    mock_device_offline(aioclient_mock)
+    mock_config_entry.add_to_hass(hass)
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=mock_config_entry.entry_id,
+        identifiers={(DOMAIN, SERIAL_NUMBER)},
+        connections={(dr.CONNECTION_NETWORK_MAC, dr.format_mac(MAC))},
+    )
+    release = asyncio.Event()
+    load = Store.async_load
+    paused = False
+
+    async def _paused_load(self: Store) -> Any:
+        nonlocal paused
+        if not paused:  # The DHCP flow's read waits for disk
+            paused = True
+            await release.wait()
+        return await load(self)
+
+    with (
+        patch.object(Store, "async_load", _paused_load),
+        patch("custom_components.oasis_mini.PLATFORMS", platforms),
+    ):
+        flow = hass.async_create_task(
+            hass.config_entries.flow.async_init(
+                DOMAIN,
+                context={"source": SOURCE_DHCP},
+                data=DhcpServiceInfo(
+                    ip=NEW_HOST,
+                    hostname="esp32",
+                    macaddress=MAC.replace(":", "").lower(),
+                ),
+            )
+        )
+        async with asyncio.timeout(5):
+            while not paused:
+                await asyncio.sleep(0.01)
+
+        # Setup starts while the flow is still waiting on the store
+        setup_task = hass.async_create_task(
+            hass.config_entries.async_setup(mock_config_entry.entry_id)
+        )
+        for _ in range(20):
+            await asyncio.sleep(0.01)
+        # The coordinator exists, but its cache load waits for the flow's save
+        assert not setup_task.done()
+
+        release.set()
+        assert (await flow)["type"] is FlowResultType.ABORT
+        assert await setup_task
+        await hass.async_block_till_done()
+
+    coordinator = mock_config_entry.runtime_data
+    assert coordinator.http_clients[SERIAL_NUMBER].host == NEW_HOST
