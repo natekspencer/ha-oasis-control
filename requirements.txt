@@ -10,7 +10,7 @@ cryptography # should already be installed with Home Assistant
 --requirement requirements_test.txt
 colorlog
 isal
-pip>=26.2.2
+pip>=26.3
 pre-commit
 pytest-homeassistant
 ruff>=0.17.4
