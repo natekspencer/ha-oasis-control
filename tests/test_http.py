@@ -734,3 +734,21 @@ async def test_dhcp_save_overlapping_setup_is_not_lost(
 
     coordinator = mock_config_entry.runtime_data
     assert coordinator.http_clients[SERIAL_NUMBER].host == NEW_HOST
+
+
+async def test_applied_dhcp_address_survives_restart(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    init_integration: MockConfigEntry,
+) -> None:
+    """An address found by DHCP is still used after a restart, over the cloud's."""
+    mock_device_offline(aioclient_mock)
+    coordinator = await setup(hass, init_integration)
+    coordinator.async_update_host(coordinator.data[0], NEW_HOST, "DHCP")
+
+    # Restart: the cloud still reports the old address
+    assert await hass.config_entries.async_reload(init_integration.entry_id)
+    await hass.async_block_till_done()
+
+    coordinator = init_integration.runtime_data
+    assert coordinator.http_clients[SERIAL_NUMBER].host == NEW_HOST

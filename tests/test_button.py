@@ -84,3 +84,17 @@ async def test_enable_http_mode_errors(
 
     with pytest.raises(HomeAssistantError):
         await coordinator.async_enable_http_mode(coordinator.data[0])
+
+
+async def test_enable_http_button_available_during_reauth(
+    hass: HomeAssistant, init_integration: MockConfigEntry
+) -> None:
+    """Bluetooth is local, so the button works while the cloud refresh fails."""
+    coordinator = init_integration.runtime_data
+    entity = OasisDeviceEnableHttpButtonEntity(
+        coordinator, coordinator.data[0], ENABLE_HTTP_DESCRIPTOR
+    )
+    coordinator.ble_clients[ADDRESS] = ble_client()
+    coordinator.last_update_success = False
+
+    assert entity.available

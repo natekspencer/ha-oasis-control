@@ -148,6 +148,9 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         self._device_cache_dirty = False
         # Addresses discovered while the entry wasn't loaded, by serial number
         self._pending_hosts: dict[str, str] = {}
+        # Each device's last effective local address, by serial number; saved so
+        # it outlives a restart (the cloud's address can be stale)
+        self._local_hosts: dict[str, str] = {}
         # Registered right away, so discoveries during setup reach this coordinator
         # instead of a store it has already read
         hass.data.setdefault(DOMAIN, {})[config_entry.entry_id] = self
@@ -286,8 +289,14 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
                         # Known before it's reached, so HTTP can check it's talking
                         # to this device even right after a restart
                         device.mac_address = self._registered_mac(serial)
+                        # Its last effective address, until something newer arrives
+                        device.ip_address = self._local_hosts.get(serial)
                         self._attach_device_listeners(device)
-                    if (ip := raw.get("ip")) and self._cloud_ips.get(serial) != ip:
+                    # The cloud's address is used when it changes, or when there's
+                    # nothing better (no address restored or reported yet)
+                    if (ip := raw.get("ip")) and (
+                        self._cloud_ips.get(serial) != ip or not device.ip_address
+                    ):
                         self._cloud_ips[serial] = ip
                         self.async_update_host(device, ip, "cloud")
                     self._async_apply_pending_host(device)
@@ -476,6 +485,11 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
                 self._device_cache = data["devices"]
             # Merged, so an address handed over before this load is kept
             self._pending_hosts = {**data.get("hosts", {}), **self._pending_hosts}
+            self._local_hosts = dict(data.get("local_hosts", {}))
+            # The cloud's address only overrides a restored one when it changes
+            for cached in self._device_cache or []:
+                if (serial := cached.get("serial_number")) and (ip := cached.get("ip")):
+                    self._cloud_ips.setdefault(serial, ip)
 
     @property
     def has_device_cache(self) -> bool:
@@ -539,6 +553,8 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         data: dict[str, Any] = {"devices": self._device_cache or []}
         if self._pending_hosts:
             data["hosts"] = self._pending_hosts
+        if self._local_hosts:
+            data["local_hosts"] = self._local_hosts
         return data
 
     def mqtt_last_seen(self, device: OasisDevice) -> datetime | None:
@@ -790,6 +806,10 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
             device.ip_address,
         )
         device.ip_address = host
+        if serial:
+            self._local_hosts[serial] = host
+            self._device_cache_dirty = True
+            self._store.async_delay_save(self._device_cache_data, 1)
         self._async_setup_http(device)
 
     @callback

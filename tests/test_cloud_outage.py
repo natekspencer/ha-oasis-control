@@ -82,7 +82,8 @@ async def test_device_list_cached(
     await hass.async_stop()
 
     assert hass_storage[cache_key(init_integration)]["data"] == {
-        "devices": [CACHED_DEVICE]
+        "devices": [CACHED_DEVICE],
+        "local_hosts": {SERIAL_NUMBER: HOST},
     }
 
 

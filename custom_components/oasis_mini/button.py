@@ -143,8 +143,14 @@ class OasisDeviceEnableHttpButtonEntity(OasisDeviceEntity, ButtonEntity):
 
     @property
     def available(self) -> bool:
-        """Return whether Home Assistant is connected to the device over Bluetooth."""
-        return super().available and self.coordinator.bluetooth_connected(self.device)
+        """Return whether Home Assistant is connected to the device over Bluetooth.
+
+        Bluetooth is local, so this doesn't follow the cloud refresh like other
+        entities: it stays usable while the refresh fails (e.g. during reauth).
+        """
+        return any(
+            d is self.device for d in self.coordinator.data or []
+        ) and self.coordinator.bluetooth_connected(self.device)
 
     async def async_press(self) -> None:
         """Turn on HTTP mode and switch to the local connection."""

@@ -580,9 +580,11 @@ class OasisBleClient(OasisClientProtocol):
         is asked for its Wi-Fi status a few times afterwards to confirm it's on.
 
         Returns:
-            bool | None: Whether the device reports HTTP mode on, or None if its
-            firmware doesn't report it.
+            bool | None: Whether the device reports HTTP mode on since the request,
+            or None if it didn't report it (e.g. its firmware doesn't).
         """
+        # Only a report after the request counts, not one from before it
+        self.http_mode = None
         await self._async_send({"command": "ENABLEHTTP"})
         for _ in range(3):
             await self._async_send({"command": "WIFISTATUS"}, "WIFISTATUS")

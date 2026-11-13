@@ -620,3 +620,13 @@ def test_complete_playlist_with_count_published(
 
     _notify(client, {"command": "GETPLAYLIST_PUSH", "part": "end", "count": "0"})
     assert device.playlist == []
+
+
+async def test_enable_http_mode_ignores_earlier_report(
+    client: OasisBleClient, responses: dict[str, Responder]
+) -> None:
+    """An HTTP mode value reported before the request doesn't decide the result."""
+    client.http_mode = False  # From an earlier notification
+    responses["WIFISTATUS"] = lambda _: [{"command": "WIFISTATUS", "status": "1"}]
+
+    assert await client.async_enable_http_mode() is None
