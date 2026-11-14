@@ -170,10 +170,6 @@ class OasisBleClient(OasisClientProtocol):
         """Associate the OasisDevice whose state this client updates."""
         self._device = device
 
-    # ------------------------------------------------------------------ #
-    # Connection management
-    # ------------------------------------------------------------------ #
-
     async def async_connect(self) -> None:
         """
         Connect to the device and enable notifications, if not already connected.
@@ -252,10 +248,6 @@ class OasisBleClient(OasisClientProtocol):
         self._waiters.clear()
         if self._playlist_waiter is not None and not self._playlist_waiter.done():
             self._playlist_waiter.set_exception(err)
-
-    # ------------------------------------------------------------------ #
-    # Low-level I/O
-    # ------------------------------------------------------------------ #
 
     async def _async_send(
         self,
@@ -517,10 +509,6 @@ class OasisBleClient(OasisClientProtocol):
         if data and self._device is not None:
             self._device.update_from_status_dict(data, source=self)
 
-    # ------------------------------------------------------------------ #
-    # Identification / status
-    # ------------------------------------------------------------------ #
-
     async def async_get_serial_number(self) -> str | None:
         """
         Connect if needed and ask the device for its serial number.
@@ -626,10 +614,6 @@ class OasisBleClient(OasisClientProtocol):
                     waiter.exception()
                 else:
                     waiter.cancel()
-
-    # ------------------------------------------------------------------ #
-    # Commands
-    # ------------------------------------------------------------------ #
 
     async def _async_wake(self, device: OasisDevice) -> None:
         """Refresh status first if the device is sleeping (as the MQTT client does)."""
