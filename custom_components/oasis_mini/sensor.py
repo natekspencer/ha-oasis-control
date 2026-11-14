@@ -134,9 +134,10 @@ REMOTE_ACCESS_DESCRIPTOR = SensorEntityDescription(
 
 
 class OasisDeviceRemoteAccessSensorEntity(OasisDeviceEntity, SensorEntity):
-    """The device's own cloud connection, shown as "Remote access" in the app.
+    """Whether the device can be controlled remotely, "Remote access" in the app.
 
-    Without it, the device can't be reached over the cloud (MQTT). "disabled"
+    Without it, the device is still online (it can download patterns, for
+    example), but can't be reached through the cloud broker (MQTT). "disabled"
     means Grounded has turned it off for the device.
     """
 

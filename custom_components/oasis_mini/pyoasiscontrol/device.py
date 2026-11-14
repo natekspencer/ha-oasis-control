@@ -138,9 +138,10 @@ class OasisDevice:
         self.wifi_sub: str | None = None
         self.environment: str | None = None
         self.schedule: Any | None = None
-        # The device's own cloud connection ("Remote access" in the app) as last
-        # reported over BLE: "active", "inactive" or "disabled" (by Grounded), and
-        # when it was reported
+        # Whether the device can be controlled remotely through the cloud ("Remote
+        # access" in the app) as last reported over BLE: "active", "inactive" or
+        # "disabled" (by Grounded), and when it was reported. Without it the device
+        # is still online (e.g. it downloads patterns), just not reachable over MQTT
         self.remote_access: str | None = None
         self.remote_access_updated: datetime | None = None
 

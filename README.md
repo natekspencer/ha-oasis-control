@@ -94,7 +94,7 @@ The table accepts a single Bluetooth connection, so while Home Assistant holds i
 
 ### Remote access inactive
 
-If the Oasis Control app shows **Remote access inactive**, the table isn't connected to the Oasis cloud and the cloud connection won't receive any updates. Use HTTP mode or Bluetooth instead, or reconnect the table to the cloud by tapping that message in the app and setting up its Wi‑Fi again.
+If the Oasis Control app shows **Remote access inactive**, the table can't be controlled remotely through the Oasis cloud. It's still online, and can still download patterns, but it doesn't connect to the cloud's remote control service, so the cloud connection can't send it commands or receive its status. Use HTTP mode or Bluetooth instead, or restore remote access by tapping that message in the app and setting up its Wi‑Fi again.
 
 The **Remote access** diagnostic sensor (disabled by default) shows the same state in Home Assistant: `Active`, `Inactive` or `Disabled`. It's read over Bluetooth, or shown as `Active` while the table is reporting through the cloud, and is unknown otherwise.
 
