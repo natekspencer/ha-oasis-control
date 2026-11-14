@@ -106,6 +106,8 @@ DESCRIPTORS = (
         device_class=SensorDeviceClass.ENUM,
         entity_category=EntityCategory.DIAGNOSTIC,
         options=["local", "bluetooth", "cloud", "disconnected"],
+        # How the device is reached doesn't depend on the cloud refresh
+        local_only=True,
         value_fn=lambda coordinator, device: coordinator.connection_type(device),
     ),
     OasisSensorEntityDescription(
