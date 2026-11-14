@@ -141,7 +141,7 @@ class OasisDevice:
         # Whether the device can be controlled remotely through the cloud ("Remote
         # access" in the app) as last reported over BLE: "active", "inactive" or
         # "disabled" (by Grounded), and when it was reported. Without it the device
-        # is still online (e.g. it downloads patterns), just not reachable over MQTT
+        # isn't reachable over MQTT
         self.remote_access: str | None = None
         self.remote_access_updated: datetime | None = None
 

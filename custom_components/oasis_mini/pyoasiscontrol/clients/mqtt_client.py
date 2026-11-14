@@ -122,8 +122,7 @@ class OasisMqttClient(OasisClientProtocol):
         """Return when the device last published over the current broker connection.
 
         A device without remote access ("Remote access inactive" in the app) never
-        publishes, even while the broker connection is up, although it's otherwise
-        online. Callers
+        publishes, even while the broker connection is up. Callers
         decide how recent a message must be for the device to count as reachable.
         """
         if not self.is_connected or not device.serial_number:
