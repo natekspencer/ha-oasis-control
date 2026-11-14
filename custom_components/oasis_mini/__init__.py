@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Sequence
 import logging
 from typing import Any
 
@@ -17,7 +17,7 @@ import homeassistant.helpers.entity_registry as er
 
 from .const import DOMAIN
 from .coordinator import OasisDeviceCoordinator, device_cache_store
-from .entity import OasisDeviceEntity
+from .entity import OasisDeviceEntity, OasisEntityDescription
 from .helpers import create_client
 from .pyoasiscontrol import OasisDevice, UnauthenticatedError
 
@@ -110,6 +110,45 @@ def setup_platform_from_coordinator(
     entry.async_on_unload(
         async_dispatcher_connect(coordinator.hass, signal, _handle_device_initialized)
     )
+
+
+def setup_described_entities[DescriptionT: OasisEntityDescription](
+    entry: OasisDeviceConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+    entity_class: Callable[
+        [OasisDeviceCoordinator, OasisDevice, DescriptionT], OasisDeviceEntity
+    ],
+    descriptions: Sequence[DescriptionT],
+) -> None:
+    """Add an entity per device for each description, following its setup rules.
+
+    Descriptions needing Bluetooth are skipped when it isn't loaded, and those
+    not requiring an initialized device are added as soon as it's on the account.
+    """
+    coordinator = entry.runtime_data
+    descriptions = [
+        description
+        for description in descriptions
+        if coordinator.bluetooth_available or not description.requires_bluetooth
+    ]
+    for require_initialized in (True, False):
+        group = [
+            description
+            for description in descriptions
+            if description.requires_initialized is require_initialized
+        ]
+        if not group:
+            continue
+        setup_platform_from_coordinator(
+            entry,
+            async_add_entities,
+            lambda devices, group=group: [
+                entity_class(coordinator, device, description)
+                for device in devices
+                for description in group
+            ],
+            require_initialized=require_initialized,
+        )
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: OasisDeviceConfigEntry) -> bool:

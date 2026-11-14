@@ -11,10 +11,7 @@ import pytest
 from custom_components.oasis_mini.const import DOMAIN
 from custom_components.oasis_mini.coordinator import STALE_AFTER
 from custom_components.oasis_mini.pyoasiscontrol import OasisBleClient, OasisMqttClient
-from custom_components.oasis_mini.sensor import (
-    REMOTE_ACCESS_DESCRIPTOR,
-    OasisDeviceRemoteAccessSensorEntity,
-)
+from custom_components.oasis_mini.sensor import DESCRIPTORS, OasisDeviceSensorEntity
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
@@ -22,6 +19,8 @@ import homeassistant.util.dt as dt_util
 
 from .common import MockConfigEntry
 from .conftest import SERIAL_NUMBER
+
+REMOTE_ACCESS = next(d for d in DESCRIPTORS if d.key == "remote_access")
 
 
 @pytest.fixture
@@ -78,9 +77,7 @@ async def test_remote_access_value(
     device.remote_access = reported
     device.remote_access_updated = now - reported_ago if reported_ago else None
 
-    entity = OasisDeviceRemoteAccessSensorEntity(
-        coordinator, device, REMOTE_ACCESS_DESCRIPTOR
-    )
+    entity = OasisDeviceSensorEntity(coordinator, device, REMOTE_ACCESS)
 
     assert entity.native_value == expected
 
@@ -96,9 +93,7 @@ async def test_ble_report_overrides_mqtt_with_broker_connected(
     mqtt.register_device(device)
     mqtt._connected_event.set()
     coordinator.mqtt_client = mqtt
-    entity = OasisDeviceRemoteAccessSensorEntity(
-        coordinator, device, REMOTE_ACCESS_DESCRIPTOR
-    )
+    entity = OasisDeviceSensorEntity(coordinator, device, REMOTE_ACCESS)
 
     await mqtt._handle_status_message(
         SimpleNamespace(topic=f"{SERIAL_NUMBER}/STATUS/OASIS_STATUS", payload=b"4")

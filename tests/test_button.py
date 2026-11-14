@@ -6,10 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from custom_components.oasis_mini.button import (
-    ENABLE_HTTP_DESCRIPTOR,
-    OasisDeviceEnableHttpButtonEntity,
-)
+from custom_components.oasis_mini.button import DESCRIPTORS, OasisDeviceButtonEntity
 from custom_components.oasis_mini.pyoasiscontrol import OasisBleClient
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -18,6 +15,7 @@ from .common import MockConfigEntry
 from .conftest import SERIAL_NUMBER
 
 ADDRESS = "AA:AA:AA:AA:AA:AA"
+ENABLE_HTTP = next(d for d in DESCRIPTORS if d.key == "enable_http_mode")
 
 
 def ble_client(*, connected: bool = True, http_mode: bool | None = True) -> MagicMock:
@@ -36,9 +34,7 @@ async def test_enable_http_button_needs_bluetooth(
     """The button is only available while connected over Bluetooth."""
     coordinator = init_integration.runtime_data
     device = coordinator.data[0]
-    entity = OasisDeviceEnableHttpButtonEntity(
-        coordinator, device, ENABLE_HTTP_DESCRIPTOR
-    )
+    entity = OasisDeviceButtonEntity(coordinator, device, ENABLE_HTTP)
     assert not entity.available
 
     coordinator.ble_clients[ADDRESS] = ble_client()
@@ -59,9 +55,7 @@ async def test_enable_http_mode_rechecks_http(
     refresh = MagicMock()
     coordinator._http_refresh[SERIAL_NUMBER] = refresh
 
-    await OasisDeviceEnableHttpButtonEntity(
-        coordinator, device, ENABLE_HTTP_DESCRIPTOR
-    ).async_press()
+    await OasisDeviceButtonEntity(coordinator, device, ENABLE_HTTP).async_press()
 
     client.async_enable_http_mode.assert_awaited_once()
     refresh.set.assert_called_once()
@@ -91,9 +85,7 @@ async def test_enable_http_button_available_during_reauth(
 ) -> None:
     """Bluetooth is local, so the button works while the cloud refresh fails."""
     coordinator = init_integration.runtime_data
-    entity = OasisDeviceEnableHttpButtonEntity(
-        coordinator, coordinator.data[0], ENABLE_HTTP_DESCRIPTOR
-    )
+    entity = OasisDeviceButtonEntity(coordinator, coordinator.data[0], ENABLE_HTTP)
     coordinator.ble_clients[ADDRESS] = ble_client()
     coordinator.last_update_success = False
 
