@@ -58,12 +58,19 @@ def device_status() -> dict[str, Any]:
 
 
 @pytest.fixture
-def mock_config_entry() -> MockConfigEntry:
+def entry_options() -> dict[str, Any]:
+    """Config entry options; override to change the options at setup."""
+    return {}
+
+
+@pytest.fixture
+def mock_config_entry(entry_options: dict[str, Any]) -> MockConfigEntry:
     """Return a config entry for the integration."""
     return MockConfigEntry(
         domain=DOMAIN,
         unique_id=str(USER_ID),
         data={CONF_EMAIL: "user@example.com", CONF_ACCESS_TOKEN: "token"},
+        options=entry_options,
         version=1,
         minor_version=3,
     )
@@ -99,6 +106,8 @@ def mock_mqtt_client(device_status: dict[str, Any]) -> Generator[MagicMock]:
     client.is_running = False
     client.async_close = AsyncMock()
     client.async_get_status = AsyncMock()
+    # Devices haven't published over MQTT unless a test says so
+    client.last_seen.return_value = None
 
     def _register_devices(devices: list[OasisDevice]) -> None:
         for device in devices:

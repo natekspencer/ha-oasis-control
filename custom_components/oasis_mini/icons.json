@@ -8,7 +8,20 @@
         }
       }
     },
+    "button": {
+      "enable_http_mode": {
+        "default": "mdi:lan-connect"
+      }
+    },
     "sensor": {
+      "connection": {
+        "default": "mdi:lan-disconnect",
+        "state": {
+          "bluetooth": "mdi:bluetooth-connect",
+          "cloud": "mdi:cloud-check-outline",
+          "local": "mdi:lan-connect"
+        }
+      },
       "download_progress": {
         "default": "mdi:progress-download"
       },
@@ -19,6 +32,14 @@
         "default": "mdi:alert-circle-outline",
         "state": {
           "0": "mdi:circle-outline"
+        }
+      },
+      "remote_access": {
+        "default": "mdi:cloud-question-outline",
+        "state": {
+          "active": "mdi:cloud-check-outline",
+          "inactive": "mdi:cloud-off-outline",
+          "disabled": "mdi:cloud-cancel-outline"
         }
       },
       "status": {
@@ -40,6 +61,14 @@
         "default": "mdi:wifi",
         "state": {
           "off": "mdi:wifi-off"
+        }
+      }
+    },
+    "switch": {
+      "bluetooth": {
+        "default": "mdi:bluetooth",
+        "state": {
+          "off": "mdi:bluetooth-off"
         }
       }
     }

@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Iterable
-from datetime import UTC, datetime
+import contextlib
+from datetime import UTC, datetime, timedelta
 import logging
 import ssl
 from typing import Any, Final
@@ -23,6 +24,8 @@ HOST: Final = "mqtt.grounded.so"
 PORT: Final = 8084
 PATH: Final = "mqtt"
 RECONNECT_INTERVAL: Final = 4
+# Back off to this while the broker stays unreachable (e.g. a cloud outage)
+MAX_RECONNECT_INTERVAL: Final = 3600
 
 # Command queue behaviour
 MAX_PENDING_COMMANDS: Final = 10
@@ -64,7 +67,10 @@ class OasisMqttClient(OasisClientProtocol):
         self._connected_at: datetime | None = None
 
         self._connected_event: asyncio.Event = asyncio.Event()
+        self._connection_listeners: list[Callable[[], None]] = []
         self._stop_event: asyncio.Event = asyncio.Event()
+        # Set to cut a reconnect backoff short (e.g. the cloud is reachable again)
+        self._retry_event: asyncio.Event = asyncio.Event()
 
         # Known devices by serial
         self._devices: dict[str, OasisDevice] = {}
@@ -72,6 +78,13 @@ class OasisMqttClient(OasisClientProtocol):
         # Per-device events
         self._initialized_events: dict[str, asyncio.Event] = {}
         self._mac_events: dict[str, asyncio.Event] = {}
+
+        # When each device last published during the current broker connection;
+        # the broker connection alone doesn't mean a device is reachable through it
+        self._last_seen: dict[str, datetime] = {}
+        # How long a message counts as showing the device is reachable (set by the
+        # caller), used to notify listeners when a message makes it reachable again
+        self.reachable_for = timedelta(minutes=3)
 
         # Subscription bookkeeping
         self._subscribed_serials: set[str] = set()
@@ -91,10 +104,56 @@ class OasisMqttClient(OasisClientProtocol):
             and not self._stop_event.is_set()
         )
 
+    def retry_now(self) -> None:
+        """Retry connecting right away if waiting out a reconnect backoff.
+
+        The backoff itself isn't reset, so if the attempt fails the next one waits
+        as long as it would have; it resets once a connection succeeds.
+        """
+        if self.is_running and not self.is_connected:
+            self._retry_event.set()
+
     @property
     def is_connected(self) -> bool:
         """Return `True` if the MQTT client is currently connected."""
         return self._connected_event.is_set()
+
+    def last_seen(self, device: OasisDevice) -> datetime | None:
+        """Return when the device last published over the current broker connection.
+
+        A device without remote access ("Remote access inactive" in the app) never
+        publishes, even while the broker connection is up. Callers
+        decide how recent a message must be for the device to count as reachable.
+        """
+        if not self.is_connected or not device.serial_number:
+            return None
+        return self._last_seen.get(device.serial_number)
+
+    def add_connection_listener(
+        self, listener: Callable[[], None]
+    ) -> Callable[[], None]:
+        """
+        Register a callback invoked whenever the broker connection is established or
+        lost, or a device first publishes over it (becomes reachable).
+
+        Returns:
+            Callable[[], None]: An unsubscribe function; calling it multiple times is safe.
+        """
+        self._connection_listeners.append(listener)
+
+        def _unsub() -> None:
+            if listener in self._connection_listeners:
+                self._connection_listeners.remove(listener)
+
+        return _unsub
+
+    def _notify_connection_listeners(self) -> None:
+        """Invoke all connection listeners, logging (not raising) their errors."""
+        for listener in list(self._connection_listeners):
+            try:
+                listener()
+            except Exception:
+                _LOGGER.exception("Error in MQTT connection listener")
 
     def register_device(self, device: OasisDevice) -> None:
         """
@@ -224,7 +283,15 @@ class OasisMqttClient(OasisClientProtocol):
         self._subscribed_serials.clear()
         for serial, device in self._devices.items():
             await self._subscribe_serial(serial)
-            if not device.is_sleeping:
+            # Devices attached to another transport (e.g. BLE) refresh themselves,
+            # except over legacy BLE firmware, which only reports identity and Wi-Fi
+            # state and relies on MQTT for everything else, and devices that still
+            # aren't fully identified (e.g. HTTP status without a firmware version)
+            if (
+                device.client is self
+                or getattr(device.client, "legacy_firmware", False)
+                or not device.is_initialized
+            ) and not device.is_sleeping:
                 await self.async_get_all(device)
 
     def start(
@@ -720,6 +787,8 @@ class OasisMqttClient(OasisClientProtocol):
         """
         loop = asyncio.get_running_loop()
         tls_context = await loop.run_in_executor(None, ssl.create_default_context)
+        # Consecutive attempts that failed without connecting
+        failures = 0
 
         while not self._stop_event.is_set():
             try:
@@ -737,9 +806,12 @@ class OasisMqttClient(OasisClientProtocol):
                     websocket_path=f"/{PATH}",
                 ) as client:
                     self._client = client
+                    failures = 0
+                    self._last_seen.clear()
                     self._connected_event.set()
                     self._connected_at = datetime.now(UTC)
                     _LOGGER.info("Connected to MQTT broker")
+                    self._notify_connection_listeners()
 
                     # Subscribe only to STATUS topics for known devices
                     await self._resubscribe_all()
@@ -764,8 +836,11 @@ class OasisMqttClient(OasisClientProtocol):
                 dropped = (
                     isinstance(ex, aiomqtt.MqttError) and self._connected_event.is_set()
                 )
+                if not dropped:
+                    failures += 1
+                # Only the first failure of an outage is worth a warning
                 _LOGGER.log(
-                    logging.INFO if dropped else logging.WARNING,
+                    logging.WARNING if failures == 1 else logging.INFO,
                     "MQTT connection error: %s",
                     ex.__cause__ or ex,
                 )
@@ -779,14 +854,20 @@ class OasisMqttClient(OasisClientProtocol):
                             datetime.now(UTC) - self._connected_at,
                         )
                     self._connected_at = None
+                    self._notify_connection_listeners()
                 self._client = None
                 self._subscribed_serials.clear()
 
             if not self._stop_event.is_set():
-                _LOGGER.info(
-                    "Disconnected from broker, retrying in %.1fs", RECONNECT_INTERVAL
+                delay = min(
+                    RECONNECT_INTERVAL * 2 ** max(failures - 1, 0),
+                    MAX_RECONNECT_INTERVAL,
                 )
-                await asyncio.sleep(RECONNECT_INTERVAL)
+                _LOGGER.info("Disconnected from broker, retrying in %.1fs", delay)
+                self._retry_event.clear()
+                with contextlib.suppress(TimeoutError):
+                    async with asyncio.timeout(delay):
+                        await self._retry_event.wait()
 
     async def _handle_status_message(self, msg: aiomqtt.Message) -> None:
         """
@@ -900,7 +981,26 @@ class OasisMqttClient(OasisClientProtocol):
             return
 
         if data:
-            device.update_from_status_dict(data)
+            device.update_from_status_dict(data, source=self)
+
+        seen = datetime.now(UTC)
+        previous = self._last_seen.get(serial)
+        self._last_seen[serial] = seen
+        # Let listeners know when this message changes whether the device counts as
+        # reachable over the broker, even if it changed nothing else: its first
+        # message, one after it had gone quiet too long, or one newer than a BLE
+        # report that remote access was lost
+        reported = device.remote_access_updated
+        if (
+            previous is None
+            or seen - previous >= self.reachable_for
+            or (
+                reported is not None
+                and device.remote_access != "active"
+                and previous < reported <= seen
+            )
+        ):
+            self._notify_connection_listeners()
 
         is_initialized_event = self._initialized_events.setdefault(
             serial, asyncio.Event()

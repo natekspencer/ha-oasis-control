@@ -43,22 +43,11 @@
       "wrong_account": "Account used for the integration should not change"
     }
   },
-  "options": {
-    "step": {
-      "init": {
-        "description": "Add your cloud credentials to get additional information about your device",
-        "data": {
-          "email": "[%key:common::config_flow::data::email%]",
-          "password": "[%key:common::config_flow::data::password%]"
-        }
-      }
-    },
-    "error": {
-      "invalid_auth": "[%key:common::config_flow::error::invalid_auth%]"
-    }
-  },
   "entity": {
     "button": {
+      "enable_http_mode": {
+        "name": "Enable HTTP mode"
+      },
       "random_track": {
         "name": "Play random track"
       },
@@ -69,6 +58,9 @@
     "binary_sensor": {
       "busy": {
         "name": "Busy"
+      },
+      "responding": {
+        "name": "Connection"
       },
       "wifi_status": {
         "name": "Wi-Fi status"
@@ -110,6 +102,15 @@
       }
     },
     "sensor": {
+      "connection": {
+        "name": "Connection type",
+        "state": {
+          "bluetooth": "Bluetooth",
+          "cloud": "Cloud",
+          "disconnected": "Disconnected",
+          "local": "Local network"
+        }
+      },
       "download_progress": {
         "name": "Download progress"
       },
@@ -140,11 +141,16 @@
           "18": "Error while downloading the job file"
         }
       },
-      "last_updated": {
-        "name": "Last updated"
-      },
       "led_color_id": {
         "name": "LED color ID"
+      },
+      "remote_access": {
+        "name": "Remote access",
+        "state": {
+          "active": "Active",
+          "inactive": "Inactive",
+          "disabled": "Disabled"
+        }
       },
       "status": {
         "name": "Status",
@@ -166,6 +172,9 @@
     "switch": {
       "auto_clean": {
         "name": "Auto-clean"
+      },
+      "bluetooth": {
+        "name": "Connect over Bluetooth"
       }
     }
   },

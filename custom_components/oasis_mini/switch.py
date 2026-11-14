@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from homeassistant.components.switch import SwitchEntity, SwitchEntityDescription
@@ -9,8 +11,9 @@ from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from . import OasisDeviceConfigEntry, setup_platform_from_coordinator
-from .entity import OasisDeviceEntity
+from . import OasisDeviceConfigEntry, setup_described_entities
+from .coordinator import OasisDeviceCoordinator
+from .entity import OasisDeviceEntity, OasisEntityDescription
 from .pyoasiscontrol import OasisDevice
 
 
@@ -19,41 +22,46 @@ async def async_setup_entry(
     entry: OasisDeviceConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """
-    Set up Oasis device switch entities for a config entry.
+    """Set up Oasis device switch entities for a config entry."""
+    setup_described_entities(
+        entry, async_add_entities, OasisDeviceSwitchEntity, DESCRIPTORS
+    )
 
-    Creates an OasisDeviceSwitchEntity for each OasisDevice associated with the given config entry (one entity per descriptor in DESCRIPTORS) and registers them with Home Assistant via the coordinator helper.
 
-    Parameters:
-        hass (HomeAssistant): Home Assistant core instance.
-        entry (OasisDeviceConfigEntry): Config entry containing runtime data used to create device update entities.
-        async_add_entities (AddEntitiesCallback): Callback to add created entities to Home Assistant.
-    """
+@dataclass(frozen=True, kw_only=True)
+class OasisSwitchEntityDescription(OasisEntityDescription, SwitchEntityDescription):
+    """Oasis device switch entity description."""
 
-    def make_entities(new_devices: list[OasisDevice]):
-        """
-        Create OasisDeviceSwitchEntity instances for each device and descriptor.
-
-        Parameters:
-            new_devices (list[OasisDevice]): Devices to wrap as switch entities.
-
-        Returns:
-            list[OasisDeviceSwitchEntity]: A list containing one switch entity per device per descriptor from DESCRIPTORS.
-        """
-        return [
-            OasisDeviceSwitchEntity(entry.runtime_data, device, descriptor)
-            for device in new_devices
-            for descriptor in DESCRIPTORS
-        ]
-
-    setup_platform_from_coordinator(entry, async_add_entities, make_entities)
+    is_on_fn: Callable[[OasisDeviceCoordinator, OasisDevice], bool]
+    set_fn: Callable[[OasisDeviceCoordinator, OasisDevice, bool], Awaitable[None]]
 
 
 DESCRIPTORS = (
-    SwitchEntityDescription(
+    OasisSwitchEntityDescription(
         key="auto_clean",
         translation_key="auto_clean",
         entity_category=EntityCategory.CONFIG,
+        is_on_fn=lambda _, device: device.auto_clean,
+        set_fn=lambda _, device, on: device.async_set_auto_clean(on),
+    ),
+    # Whether Home Assistant connects to the device over Bluetooth; it doesn't
+    # change the table's own Bluetooth. The table accepts a single Bluetooth
+    # connection, so turning this off frees it for the Oasis app. Created right
+    # away: a device only reachable over Bluetooth never initializes while it's
+    # off, and must be turnable on
+    OasisSwitchEntityDescription(
+        key="bluetooth",
+        translation_key="bluetooth",
+        entity_category=EntityCategory.CONFIG,
+        local_only=True,
+        requires_initialized=False,
+        requires_bluetooth=True,
+        is_on_fn=lambda coordinator, device: coordinator.bluetooth_enabled(
+            device.serial_number
+        ),
+        set_fn=lambda coordinator, device, on: coordinator.async_set_bluetooth_enabled(
+            device, on
+        ),
     ),
 )
 
@@ -61,26 +69,19 @@ DESCRIPTORS = (
 class OasisDeviceSwitchEntity(OasisDeviceEntity, SwitchEntity):
     """Oasis device switch entity."""
 
+    entity_description: OasisSwitchEntityDescription
+
     @property
     def is_on(self) -> bool:
-        """
-        Determine whether the switch entity is currently on.
-
-        Returns:
-            bool: `True` if the underlying device attribute named by this entity's description key is truthy, `False` otherwise.
-        """
-        return bool(getattr(self.device, self.entity_description.key))
-
-    async def async_turn_off(self, **kwargs: Any) -> None:
-        """
-        Disable the device's automatic cleaning mode.
-
-        Sets the device's auto_clean setting to off.
-        """
-        await self.device.async_set_auto_clean(False)
+        """Return whether the switch is on."""
+        return self.entity_description.is_on_fn(self.coordinator, self.device)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        """
-        Enable the device's auto-clean feature.
-        """
-        await self.device.async_set_auto_clean(True)
+        """Turn the switch on."""
+        await self.entity_description.set_fn(self.coordinator, self.device, True)
+        self.async_write_ha_state()
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn the switch off."""
+        await self.entity_description.set_fn(self.coordinator, self.device, False)
+        self.async_write_ha_state()

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from collections.abc import Callable
+from dataclasses import dataclass
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -13,9 +14,11 @@ from homeassistant.components.sensor import (
 from homeassistant.const import PERCENTAGE, EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.typing import StateType
 
-from . import OasisDeviceConfigEntry, setup_platform_from_coordinator
-from .entity import OasisDeviceEntity
+from . import OasisDeviceConfigEntry, setup_described_entities
+from .coordinator import OasisDeviceCoordinator
+from .entity import OasisDeviceEntity, OasisEntityDescription
 from .pyoasiscontrol import OasisDevice
 
 
@@ -24,76 +27,107 @@ async def async_setup_entry(
     entry: OasisDeviceConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
+    """Set up Oasis device sensor entities for a config entry."""
+    setup_described_entities(
+        entry, async_add_entities, OasisDeviceSensorEntity, DESCRIPTORS
+    )
+
+
+@dataclass(frozen=True, kw_only=True)
+class OasisSensorEntityDescription(OasisEntityDescription, SensorEntityDescription):
+    """Oasis device sensor entity description."""
+
+    value_fn: Callable[[OasisDeviceCoordinator, OasisDevice], StateType]
+
+
+def remote_access(
+    coordinator: OasisDeviceCoordinator, device: OasisDevice
+) -> str | None:
+    """Return whether the device can be controlled remotely, if known.
+
+    This is "Remote access" in the app: without it, the device can't be reached
+    through the cloud broker (MQTT). "disabled" means Grounded has turned it off
+    for the device.
     """
-    Set up and register sensor entities for each Oasis device in the config entry.
-
-    Creates sensor entities for every Oasis device available on the provided config entry and adds them to Home Assistant via the provided add-entities callback.
-
-    Parameters:
-        hass (HomeAssistant): Home Assistant core object.
-        entry (OasisDeviceConfigEntry): Configuration entry containing runtime data and devices to expose.
-        async_add_entities (AddEntitiesCallback): Callback to add created entities to Home Assistant.
-    """
-
-    def make_entities(new_devices: list[OasisDevice]):
-        """
-        Create sensor entity instances for each Oasis device and each sensor descriptor.
-
-        Parameters:
-            new_devices (list[OasisDevice]): Devices to create sensor entities for.
-
-        Returns:
-            list[OasisDeviceSensorEntity]: A list containing one sensor entity per combination of device and descriptor from DESCRIPTORS.
-        """
-        return [
-            OasisDeviceSensorEntity(entry.runtime_data, device, descriptor)
-            for device in new_devices
-            for descriptor in DESCRIPTORS
-        ]
-
-    setup_platform_from_coordinator(entry, async_add_entities, make_entities)
+    # A device publishing over the cloud broker is evidently connected to it,
+    # unless BLE has reported otherwise since
+    seen = coordinator.mqtt_last_seen(device)
+    reported = device.remote_access_updated
+    if seen is not None and (reported is None or seen >= reported):
+        return "active"
+    # Otherwise BLE's report is used; a quiet broker alone doesn't prove the
+    # device is offline, so it's unknown without one
+    return device.remote_access
 
 
-DESCRIPTORS = [
-    SensorEntityDescription(
+DESCRIPTORS = (
+    OasisSensorEntityDescription(
         key="download_progress",
         translation_key="download_progress",
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda _, device: device.download_progress,
     ),
-    SensorEntityDescription(
+    OasisSensorEntityDescription(
         key="drawing_progress",
         translation_key="drawing_progress",
         entity_category=EntityCategory.DIAGNOSTIC,
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
+        value_fn=lambda _, device: device.drawing_progress,
     ),
-    SensorEntityDescription(
-        key="last_updated",
-        translation_key="last_updated",
-        device_class=SensorDeviceClass.TIMESTAMP,
+    OasisSensorEntityDescription(
+        key="error",
+        translation_key="error",
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
+        value_fn=lambda _, device: device.error,
     ),
-]
-DESCRIPTORS.extend(
-    SensorEntityDescription(
-        key=key,
-        translation_key=key,
+    OasisSensorEntityDescription(
+        key="led_color_id",
+        translation_key="led_color_id",
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
-    )
-    for key in ("error", "led_color_id", "status")
+        value_fn=lambda _, device: device.led_color_id,
+    ),
+    OasisSensorEntityDescription(
+        key="status",
+        translation_key="status",
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda _, device: device.status,
+    ),
+    OasisSensorEntityDescription(
+        key="connection",
+        translation_key="connection",
+        device_class=SensorDeviceClass.ENUM,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        options=["local", "bluetooth", "cloud", "disconnected"],
+        # How the device is reached doesn't depend on the cloud refresh
+        local_only=True,
+        value_fn=lambda coordinator, device: coordinator.connection_type(device),
+    ),
+    OasisSensorEntityDescription(
+        key="remote_access",
+        translation_key="remote_access",
+        device_class=SensorDeviceClass.ENUM,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        options=["active", "inactive", "disabled"],
+        value_fn=remote_access,
+    ),
 )
 
 
 class OasisDeviceSensorEntity(OasisDeviceEntity, SensorEntity):
     """Oasis device sensor entity."""
 
+    entity_description: OasisSensorEntityDescription
+
     @property
-    def native_value(self) -> str | int | float | datetime | None:
-        """Provide the current sensor value from the underlying device."""
-        return getattr(self.device, self.entity_description.key)
+    def native_value(self) -> StateType:
+        """Return the sensor's value."""
+        return self.entity_description.value_fn(self.coordinator, self.device)

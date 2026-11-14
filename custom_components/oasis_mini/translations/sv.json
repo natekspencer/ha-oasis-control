@@ -43,22 +43,11 @@
       "wrong_account": "Kontot som används för integrationen bör inte ändras"
     }
   },
-  "options": {
-    "step": {
-      "init": {
-        "description": "Ange dina molninloggningsuppgifter för att få mer information om denna enhet",
-        "data": {
-          "email": "E-post",
-          "password": "Lösenord"
-        }
-      }
-    },
-    "error": {
-      "invalid_auth": "Ogiltig autentisering"
-    }
-  },
   "entity": {
     "button": {
+      "enable_http_mode": {
+        "name": "Aktivera HTTP-läge"
+      },
       "random_track": {
         "name": "Spela slumpmässigt spår"
       },
@@ -69,6 +58,9 @@
     "binary_sensor": {
       "busy": {
         "name": "Upptagen"
+      },
+      "responding": {
+        "name": "Anslutning"
       },
       "wifi_status": {
         "name": "Wi-Fi status"
@@ -110,6 +102,15 @@
       }
     },
     "sensor": {
+      "connection": {
+        "name": "Anslutningstyp",
+        "state": {
+          "bluetooth": "Bluetooth",
+          "cloud": "Moln",
+          "disconnected": "Frånkopplad",
+          "local": "Lokalt nätverk"
+        }
+      },
       "download_progress": {
         "name": "Nedladdningsförlopp"
       },
@@ -140,11 +141,16 @@
           "18": "Ett fel har inträffat vid nedladdning av jobbfilen"
         }
       },
-      "last_updated": {
-        "name": "Senast uppdaterad"
-      },
       "led_color_id": {
         "name": "LED-färg-ID"
+      },
+      "remote_access": {
+        "name": "Fjärråtkomst",
+        "state": {
+          "active": "Aktiv",
+          "inactive": "Inaktiv",
+          "disabled": "Avstängd"
+        }
       },
       "status": {
         "name": "Status",
@@ -166,6 +172,9 @@
     "switch": {
       "auto_clean": {
         "name": "Autorengöring"
+      },
+      "bluetooth": {
+        "name": "Anslut via Bluetooth"
       }
     }
   },
