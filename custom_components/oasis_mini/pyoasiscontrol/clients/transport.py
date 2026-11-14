@@ -12,6 +12,7 @@ class OasisClientProtocol(Protocol):
     Concrete implementations:
     - MQTT client (remote connection)
     - HTTP client (direct LAN)
+    - BLE client (direct Bluetooth)
     """
 
     async def async_get_mac_address(self, device: OasisDevice) -> str | None:

@@ -1,0 +1,632 @@
+"""Tests for the Oasis Bluetooth LE client."""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import Callable
+import json
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+from custom_components.oasis_mini.pyoasiscontrol import (
+    CommandRejectedError,
+    OasisDevice,
+)
+from custom_components.oasis_mini.pyoasiscontrol.clients import ble_client
+from custom_components.oasis_mini.pyoasiscontrol.clients.ble_client import (
+    OasisBleClient,
+)
+
+ADDRESS = "AA:BB:CC:DD:EE:FF"
+
+# Returns the notifications the fake device sends in reply to a command
+type Responder = Callable[[dict[str, Any]], list[dict[str, Any]]]
+
+
+@pytest.fixture(autouse=True)
+def no_write_spacing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Don't space writes apart in tests."""
+    monkeypatch.setattr(ble_client, "WRITE_MIN_INTERVAL", 0)
+
+
+@pytest.fixture
+def device() -> OasisDevice:
+    """Return a device."""
+    return OasisDevice(model="Oasis Mini", serial_number="OM1")
+
+
+@pytest.fixture
+def responses() -> dict[str, Responder]:
+    """Replies the fake device sends for each command; tests add to this."""
+    return {
+        "GETMAC": lambda _: [{"command": "GETMAC", "mac": "aa:bb:cc:dd:ee:ff"}],
+        "GETSOFTWAREVER": lambda _: [{"command": "GETSOFTWAREVER", "version": "2.60"}],
+        "WIFISTATUS": lambda _: [{"command": "WIFISTATUS", "status": "1", "mqtt": "1"}],
+    }
+
+
+@pytest.fixture
+def client(device: OasisDevice, responses: dict[str, Responder]) -> OasisBleClient:
+    """Return a BLE client attached to the device over a fake connection."""
+    client = OasisBleClient(ADDRESS, lambda: None)
+    client.attach_device(device)
+    device.attach_client(client)
+
+    async def _write(_uuid: str, data: bytes, response: bool) -> None:
+        payload = json.loads(data)
+        if responder := responses.get(payload["command"]):
+            for message in responder(payload):
+                _notify(client, message)
+
+    client._client = MagicMock(is_connected=True)
+    client._client.write_gatt_char = AsyncMock(side_effect=_write)
+    return client
+
+
+def _notify(client: OasisBleClient, message: dict[str, Any]) -> None:
+    """Deliver a notification to the client, as the device would."""
+    client._handle_notification(MagicMock(), bytearray(json.dumps(message).encode()))
+
+
+def _written(client: OasisBleClient) -> list[dict[str, Any]]:
+    """Return the commands written to the device."""
+    assert client._client is not None
+    return [
+        json.loads(call.args[1]) for call in client._client.write_gatt_char.mock_calls
+    ]
+
+
+def _playlist_push(command: str, track_ids: list[int]) -> list[dict[str, Any]]:
+    """Return the notifications the device sends to report its playlist."""
+    return [
+        {"command": command, "part": str(i), "job": {"idx": str(i), "id": str(t)}}
+        for i, t in enumerate(track_ids)
+    ] + [{"command": command, "part": "end"}]
+
+
+def test_status_notification(client: OasisBleClient, device: OasisDevice) -> None:
+    """GETSTATUS fields are mapped onto the device."""
+    _notify(
+        client,
+        {
+            "command": "GETSTATUS",
+            "st": "4",
+            "job": "1",
+            "cl": "250",
+            "sp": "200",
+            "lb": "150",
+            "lp": "#FFFFFF",
+            "rj": "1",
+            "ac": "0",
+        },
+    )
+
+    assert device.status_code == 4
+    assert device.playlist_index == 1
+    assert device.progress == 250
+    assert device.ball_speed == 200
+    assert device.brightness == 150
+    assert device.color == "#FFFFFF"
+    assert device.repeat_playlist is True
+    assert device.auto_clean is False
+
+
+def test_fragmented_notification(client: OasisBleClient, device: OasisDevice) -> None:
+    """A notification split across writes is reassembled."""
+    data = json.dumps({"command": "LINESTATUS", "cl": "321"}).encode()
+
+    client._handle_notification(MagicMock(), bytearray(data[:10]))
+    assert device.progress == 0
+    client._handle_notification(MagicMock(), bytearray(data[10:]))
+
+    assert device.progress == 321
+
+
+def test_invalid_data_dropped(client: OasisBleClient, device: OasisDevice) -> None:
+    """Data that isn't the start of a JSON object doesn't block later notifications."""
+    client._handle_notification(MagicMock(), bytearray(b"garbage"))
+    _notify(client, {"command": "LINESTATUS", "cl": "12"})
+
+    assert device.progress == 12
+
+
+async def test_get_all(
+    client: OasisBleClient, device: OasisDevice, responses: dict[str, Responder]
+) -> None:
+    """The initial sync reads status and the full playlist."""
+    responses["GETSTATUS"] = lambda _: [{"command": "GETSTATUS", "st": "2"}]
+    responses["GETPLAYLIST"] = lambda _: _playlist_push("GETPLAYLIST", [101, 102])
+
+    await client.async_get_all(device)
+
+    assert device.status_code == 2
+    assert device.playlist == [101, 102]
+    assert client.legacy_firmware is False
+
+
+async def test_legacy_firmware(
+    client: OasisBleClient, device: OasisDevice, responses: dict[str, Responder]
+) -> None:
+    """Firmware without GETSTATUS over BLE only owns identity and Wi-Fi fields."""
+    responses["GETSTATUS"] = lambda _: [
+        {"command": "UNKNOWN", "received": '{"command":"GETSTATUS"}'}
+    ]
+
+    await client.async_get_all(device)
+
+    assert client.legacy_firmware is True
+    assert "status_code" not in client.status_fields
+    assert "GETPLAYLIST" not in [c["command"] for c in _written(client)]
+
+    # The cloud keeps reporting status for legacy firmware
+    device.update_from_status_dict({"status_code": 4}, source=MagicMock())
+    assert device.status_code == 4
+
+
+def test_other_transport_cannot_overwrite_ble_fields(
+    client: OasisBleClient, device: OasisDevice
+) -> None:
+    """While BLE is active, MQTT updates to fields BLE reports are ignored."""
+    _notify(client, {"command": "GETSTATUS", "st": "4"})
+
+    device.update_from_status_dict(
+        {"status_code": 2, "wifi_ssid": "home"}, source=MagicMock()
+    )
+
+    assert device.status_code == 4
+    assert device.wifi_ssid == "home"
+
+
+async def test_set_playlist_waits_for_push(
+    client: OasisBleClient, device: OasisDevice, responses: dict[str, Responder]
+) -> None:
+    """Replacing the playlist completes when the device pushes the new playlist."""
+    responses["WRIJOBLIST"] = lambda payload: _playlist_push(
+        "GETPLAYLIST_PUSH", [int(t) for t in payload["value"].split(",")]
+    )
+
+    async with asyncio.timeout(1):
+        await client.async_send_set_playlist_command(device, [201, 202, 203])
+
+    assert _written(client) == [{"command": "WRIJOBLIST", "value": "201,202,203"}]
+    assert device.playlist == [201, 202, 203]
+
+
+async def test_command_not_supported(
+    client: OasisBleClient,
+    device: OasisDevice,
+    responses: dict[str, Responder],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An UNKNOWN reply to a command is logged."""
+    responses["CMDPLAY"] = lambda _: [{"command": "UNKNOWN", "received": "CMDPLAY"}]
+
+    await client.async_send_play_command(device)
+
+    assert "does not support BLE command CMDPLAY" in caplog.text
+
+
+def test_empty_playlist_transfer_not_stale(
+    client: OasisBleClient, device: OasisDevice
+) -> None:
+    """A transfer with no entries reports an empty playlist, not the last one."""
+    for message in _playlist_push("GETPLAYLIST_PUSH", [101, 102]):
+        _notify(client, message)
+    assert device.playlist == [101, 102]
+
+    _notify(client, {"command": "GETPLAYLIST_PUSH", "part": "end"})
+
+    assert device.playlist == []
+
+
+async def test_concurrent_playlist_writes_serialized(
+    client: OasisBleClient, device: OasisDevice, responses: dict[str, Responder]
+) -> None:
+    """A second playlist write waits for the first to complete."""
+    pushes: list[list[int]] = []
+    responses["WRIJOBLIST"] = lambda payload: (
+        pushes.append([int(t) for t in payload["value"].split(",")]) or []
+    )
+
+    first = asyncio.create_task(client.async_send_set_playlist_command(device, [1]))
+    second = asyncio.create_task(client.async_send_set_playlist_command(device, [2]))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    # Only the first write is sent until the device pushes its playlist back
+    assert pushes == [[1]]
+
+    for message in _playlist_push("GETPLAYLIST_PUSH", [1]):
+        _notify(client, message)
+    await first
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert pushes == [[1], [2]]
+    assert not second.done()
+
+    for message in _playlist_push("GETPLAYLIST_PUSH", [2]):
+        _notify(client, message)
+    await second
+    assert device.playlist == [2]
+
+
+async def test_disconnect_fails_pending_reply(client: OasisBleClient) -> None:
+    """A disconnect while waiting for a reply raises instead of returning nothing."""
+    task = asyncio.create_task(client.async_get_status(client._device))
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    client._handle_disconnect(MagicMock())
+
+    with pytest.raises(ble_client.BleakError):
+        await task
+
+
+async def test_cancel_while_waiting_for_reply(client: OasisBleClient) -> None:
+    """Cancelling a command waiting for its reply cancels it, not a silent None."""
+    task = asyncio.create_task(client.async_get_status(client._device))
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_connection_completing_after_close_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connection that finishes after async_close is disconnected, not kept."""
+    connected = asyncio.Event()
+    proceed = asyncio.Event()
+    connection = MagicMock(is_connected=True)
+    connection.start_notify = AsyncMock()
+    connection.disconnect = AsyncMock()
+
+    async def _establish(*_args: object, **_kwargs: object) -> MagicMock:
+        connected.set()
+        await proceed.wait()
+        return connection
+
+    monkeypatch.setattr(ble_client, "establish_connection", _establish)
+    client = OasisBleClient(ADDRESS, lambda: MagicMock())
+
+    task = asyncio.create_task(client.async_connect())
+    await connected.wait()
+    await client.async_close()
+    proceed.set()
+
+    with pytest.raises(ble_client.BleakError):
+        await task
+    connection.disconnect.assert_awaited_once()
+    assert not client.is_connected
+
+
+async def test_queued_connect_after_close_stays_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connect queued behind one in progress doesn't reopen a closed client."""
+    started = asyncio.Event()
+    proceed = asyncio.Event()
+    connections: list[MagicMock] = []
+
+    async def _establish(*_args: object, **_kwargs: object) -> MagicMock:
+        connection = MagicMock(is_connected=True)
+        connection.start_notify = AsyncMock()
+        connection.disconnect = AsyncMock()
+        connections.append(connection)
+        started.set()
+        await proceed.wait()
+        return connection
+
+    monkeypatch.setattr(ble_client, "establish_connection", _establish)
+    client = OasisBleClient(ADDRESS, lambda: MagicMock())
+
+    first = asyncio.create_task(client.async_connect())
+    await started.wait()
+    second = asyncio.create_task(client.async_connect())
+    await asyncio.sleep(0)
+    await client.async_close()
+    proceed.set()
+
+    for task in (first, second):
+        with pytest.raises(ble_client.BleakError):
+            await task
+    # Only the first attempt connected, and it was disconnected again
+    assert len(connections) == 1
+    connections[0].disconnect.assert_awaited_once()
+    assert not client.is_connected
+
+
+async def test_overlapping_requests_get_their_own_replies(
+    client: OasisBleClient, device: OasisDevice
+) -> None:
+    """A second request isn't sent until the first has its reply."""
+    first = asyncio.create_task(client.async_get_status(device))
+    second = asyncio.create_task(client.async_get_status(device))
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert [c["command"] for c in _written(client)] == ["GETSTATUS"]
+
+    _notify(client, {"command": "GETSTATUS", "st": "4"})
+    await first
+    for _ in range(5):
+        await asyncio.sleep(0)
+    # The first reply didn't also complete the second request
+    assert not second.done()
+    assert [c["command"] for c in _written(client)] == ["GETSTATUS", "GETSTATUS"]
+
+    _notify(client, {"command": "GETSTATUS", "st": "5"})
+    await second
+    assert device.status_code == 5
+
+
+async def test_set_playlist_ignores_stale_push(
+    client: OasisBleClient, device: OasisDevice
+) -> None:
+    """A push of the old playlist doesn't complete a replacement."""
+    task = asyncio.create_task(client.async_send_set_playlist_command(device, [7, 8]))
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    for message in _playlist_push("GETPLAYLIST_PUSH", [1, 2]):
+        _notify(client, message)
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert not task.done()
+
+    for message in _playlist_push("GETPLAYLIST_PUSH", [7, 8]):
+        _notify(client, message)
+    await task
+    assert device.playlist == [7, 8]
+
+
+async def test_set_playlist_timeout_raises(
+    client: OasisBleClient, device: OasisDevice, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A replacement the device never confirms fails instead of succeeding."""
+    monkeypatch.setattr(ble_client, "PLAYLIST_WRITE_TIMEOUT", 0.01)
+
+    with pytest.raises(TimeoutError):
+        await client.async_send_set_playlist_command(device, [7, 8])
+
+
+async def test_set_playlist_disconnect_raises(
+    client: OasisBleClient, device: OasisDevice
+) -> None:
+    """A disconnect while waiting for the new playlist fails the replacement."""
+    task = asyncio.create_task(client.async_send_set_playlist_command(device, [7]))
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    client._handle_disconnect(MagicMock())
+
+    with pytest.raises(ble_client.BleakError):
+        await task
+
+
+async def test_disconnect_during_write_pacing(
+    client: OasisBleClient, device: OasisDevice, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A disconnect while spacing writes apart raises BleakError, not a crash."""
+    monkeypatch.setattr(ble_client, "WRITE_MIN_INTERVAL", 0.05)
+    client._last_write = ble_client.time.monotonic()
+    connection = client._client
+    task = asyncio.create_task(client.async_get_status(device))
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    client._handle_disconnect(MagicMock())
+
+    with pytest.raises(ble_client.BleakError):
+        await task
+    connection.write_gatt_char.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("mqtt", "remote_access"),
+    [("1", "active"), ("0", "inactive"), ("2", "disabled")],
+)
+def test_remote_access_from_wifi_status(
+    client: OasisBleClient, device: OasisDevice, mqtt: str, remote_access: str
+) -> None:
+    """The device's own cloud connection state is read from WIFISTATUS."""
+    _notify(client, {"command": "WIFISTATUS_PUSH", "status": "1", "mqtt": mqtt})
+
+    assert device.remote_access == remote_access
+
+
+async def test_rejected_command_raises(
+    client: OasisBleClient, device: OasisDevice, responses: dict[str, Responder]
+) -> None:
+    """An explicit rejection raises, so dependent commands don't run."""
+    responses["CMDSTOP"] = lambda _: [{"command": "CMDSTOP", "status": "0"}]
+
+    with pytest.raises(CommandRejectedError, match="CMDSTOP"):
+        await device.async_set_playlist([7, 8])
+
+    assert [c["command"] for c in _written(client)] == ["CMDSTOP"]
+
+
+async def test_synced_only_after_full_sync(
+    client: OasisBleClient,
+    device: OasisDevice,
+    responses: dict[str, Responder],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failed playlist transfer leaves the client unsynced, so it's retried."""
+    monkeypatch.setattr(ble_client, "PLAYLIST_TIMEOUT", 0.01)
+    responses["GETSTATUS"] = lambda _: [{"command": "GETSTATUS", "st": "2"}]
+
+    with pytest.raises(TimeoutError):
+        await client.async_get_all(device)
+    assert device.is_initialized
+    assert not client.synced
+
+    responses["GETPLAYLIST"] = lambda _: _playlist_push("GETPLAYLIST", [101])
+    await client.async_get_all(device)
+    assert client.synced
+
+
+async def test_unsupported_playlist_completes_sync(
+    client: OasisBleClient, device: OasisDevice, responses: dict[str, Responder]
+) -> None:
+    """Firmware answering GETPLAYLIST with UNKNOWN finishes the sync right away."""
+    responses["GETSTATUS"] = lambda _: [{"command": "GETSTATUS", "st": "2"}]
+    responses["GETPLAYLIST"] = lambda _: [
+        {"command": "UNKNOWN", "received": '{"command":"GETPLAYLIST","part":"0"}'}
+    ]
+
+    async with asyncio.timeout(1):
+        await client.async_get_all(device)
+
+    assert client.legacy_firmware
+    assert client.synced
+
+
+async def test_unsupported_stop_raises(
+    client: OasisBleClient, device: OasisDevice, responses: dict[str, Responder]
+) -> None:
+    """A stop the firmware doesn't support stops a playlist replacement."""
+    responses["CMDSTOP"] = lambda _: [{"command": "UNKNOWN", "received": "CMDSTOP"}]
+
+    with pytest.raises(CommandRejectedError, match="CMDSTOP"):
+        await device.async_set_playlist([7, 8])
+
+    assert [c["command"] for c in _written(client)] == ["CMDSTOP"]
+
+
+async def test_late_reply_during_pacing_not_taken(
+    client: OasisBleClient, device: OasisDevice, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A late reply to an earlier request, arriving before this one is sent, is ignored."""
+    monkeypatch.setattr(ble_client, "WRITE_MIN_INTERVAL", 0.05)
+    client._last_write = ble_client.time.monotonic()
+    task = asyncio.create_task(
+        client._async_send({"command": "GETSTATUS"}, "GETSTATUS")
+    )
+    for _ in range(5):
+        await asyncio.sleep(0)
+
+    _notify(client, {"command": "GETSTATUS", "st": "9"})  # Late, during pacing
+    async with asyncio.timeout(1):
+        while not _written(client):
+            await asyncio.sleep(0.01)
+    assert not task.done()
+
+    _notify(client, {"command": "GETSTATUS", "st": "4"})
+    reply = await task
+    assert reply == {"command": "GETSTATUS", "st": "4"}
+
+
+async def test_failed_resync_clears_synced(
+    client: OasisBleClient,
+    device: OasisDevice,
+    responses: dict[str, Responder],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A re-sync that fails leaves the client unsynced, even if it was synced."""
+    responses["GETSTATUS"] = lambda _: [{"command": "GETSTATUS", "st": "2"}]
+    responses["GETPLAYLIST"] = lambda _: _playlist_push("GETPLAYLIST", [101])
+    await client.async_get_all(device)
+    assert client.synced
+
+    monkeypatch.setattr(ble_client, "PLAYLIST_TIMEOUT", 0.01)
+    del responses["GETPLAYLIST"]
+    with pytest.raises(TimeoutError):
+        await client.async_get_all(device)
+
+    assert not client.synced
+
+
+async def test_enable_http_mode(
+    client: OasisBleClient, responses: dict[str, Responder]
+) -> None:
+    """HTTP mode is turned on and confirmed through the Wi-Fi status."""
+    responses["WIFISTATUS"] = lambda _: [
+        {"command": "WIFISTATUS", "status": "1", "http_mode": "1"}
+    ]
+
+    assert await client.async_enable_http_mode() is True
+    assert [c["command"] for c in _written(client)] == ["ENABLEHTTP", "WIFISTATUS"]
+
+
+async def test_enable_http_mode_not_confirmed(
+    client: OasisBleClient, responses: dict[str, Responder]
+) -> None:
+    """A device still reporting HTTP mode off is asked a few times, then reported."""
+    responses["WIFISTATUS"] = lambda _: [
+        {"command": "WIFISTATUS", "status": "1", "http_mode": "0"}
+    ]
+
+    assert await client.async_enable_http_mode() is False
+    assert [c["command"] for c in _written(client)].count("WIFISTATUS") == 3
+
+
+@pytest.mark.parametrize(
+    "messages",
+    [
+        # Entry 1 lost
+        [
+            {
+                "command": "GETPLAYLIST_PUSH",
+                "part": "0",
+                "job": {"idx": "0", "id": "7"},
+            },
+            {
+                "command": "GETPLAYLIST_PUSH",
+                "part": "2",
+                "job": {"idx": "2", "id": "9"},
+            },
+            {"command": "GETPLAYLIST_PUSH", "part": "end"},
+        ],
+        # Fewer entries than the end message's count
+        [
+            {
+                "command": "GETPLAYLIST_PUSH",
+                "part": "0",
+                "job": {"idx": "0", "id": "7"},
+            },
+            {"command": "GETPLAYLIST_PUSH", "part": "end", "count": "2"},
+        ],
+    ],
+    ids=["gap", "count_mismatch"],
+)
+def test_incomplete_playlist_dropped(
+    client: OasisBleClient, device: OasisDevice, messages: list[dict[str, Any]]
+) -> None:
+    """An incomplete transfer isn't published, so a sync retries instead."""
+    device.update_from_status_dict({"playlist": [1, 2, 3]})
+
+    for message in messages:
+        _notify(client, message)
+
+    assert device.playlist == [1, 2, 3]
+
+
+def test_complete_playlist_with_count_published(
+    client: OasisBleClient, device: OasisDevice
+) -> None:
+    """A complete transfer, including an empty one, is published."""
+    for message in [
+        {"command": "GETPLAYLIST_PUSH", "part": "0", "job": {"idx": "0", "id": "7"}},
+        {"command": "GETPLAYLIST_PUSH", "part": "1", "job": {"idx": "1", "id": "8"}},
+        {"command": "GETPLAYLIST_PUSH", "part": "end", "count": "2"},
+    ]:
+        _notify(client, message)
+    assert device.playlist == [7, 8]
+
+    _notify(client, {"command": "GETPLAYLIST_PUSH", "part": "end", "count": "0"})
+    assert device.playlist == []
+
+
+async def test_enable_http_mode_ignores_earlier_report(
+    client: OasisBleClient, responses: dict[str, Responder]
+) -> None:
+    """An HTTP mode value reported before the request doesn't decide the result."""
+    client.http_mode = False  # From an earlier notification
+    responses["WIFISTATUS"] = lambda _: [{"command": "WIFISTATUS", "status": "1"}]
+
+    assert await client.async_enable_http_mode() is None

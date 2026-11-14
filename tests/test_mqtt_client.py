@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 import logging
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import aiomqtt
 from paho.mqtt.packettypes import PacketTypes
@@ -208,3 +210,119 @@ async def test_failed_connection_warns(
         for record in caplog.records
         if record.getMessage() == "MQTT connection error: Connection refused"
     ] == [logging.WARNING]
+
+
+async def test_retry_now_skips_backoff(
+    device: OasisDevice, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Failures back off and warn once; retry_now cuts the wait short."""
+    client = OasisMqttClient()
+    client.register_device(device)
+    attempts = 0
+
+    def _fail(*_: object) -> None:
+        nonlocal attempts
+        attempts += 1
+        raise aiomqtt.MqttError("Connection refused")
+
+    async def _wait_for_attempt(count: int) -> None:
+        async with asyncio.timeout(2):
+            while attempts < count:
+                await asyncio.sleep(0.01)
+
+    mqtt = MagicMock()
+    mqtt.return_value.__aenter__ = AsyncMock(side_effect=_fail)
+
+    with patch("aiomqtt.Client", mqtt), caplog.at_level(logging.INFO):
+        client.start("user", AsyncMock(return_value="token"))
+        try:
+            await _wait_for_attempt(1)
+
+            # Waiting out the 4s backoff, so nothing happens on its own
+            await asyncio.sleep(0.1)
+            assert attempts == 1
+
+            client.retry_now()
+            await _wait_for_attempt(2)
+        finally:
+            await client.async_close()
+
+    errors = [
+        record.levelno
+        for record in caplog.records
+        if record.getMessage() == "MQTT connection error: Connection refused"
+    ]
+    assert errors == [logging.WARNING, logging.INFO]
+    # retry_now doesn't reset the backoff: the next wait is still doubled
+    assert [
+        record.getMessage()
+        for record in caplog.records
+        if record.getMessage().startswith("Disconnected from broker")
+    ] == [
+        "Disconnected from broker, retrying in 4.0s",
+        "Disconnected from broker, retrying in 8.0s",
+    ]
+
+
+@pytest.mark.parametrize(("legacy", "refreshed"), [(True, True), (False, False)])
+async def test_resubscribe_refreshes_legacy_ble_devices(
+    mqtt_client: OasisMqttClient,
+    device: OasisDevice,
+    legacy: bool,
+    refreshed: bool,
+) -> None:
+    """Legacy BLE firmware relies on MQTT for status, so it's refreshed on reconnect."""
+    device.update_from_status_dict({"mac_address": "aa", "software_version": "3.54"})
+    device.attach_client(MagicMock(legacy_firmware=legacy))
+    mqtt_client._client.subscribe.return_value = [0]
+
+    await mqtt_client._resubscribe_all()
+
+    assert (
+        call(f"{SERIAL}/COMMAND/CTL", b"GETALL=", qos=1)
+        in mqtt_client._client.publish.mock_calls
+    ) is refreshed
+
+
+async def test_device_last_seen_only_once_it_publishes(
+    mqtt_client: OasisMqttClient, device: OasisDevice
+) -> None:
+    """The broker connection alone doesn't mean the device has been seen."""
+    listener = MagicMock()
+    mqtt_client.add_connection_listener(listener)
+    assert mqtt_client.last_seen(device) is None
+
+    await mqtt_client._handle_status_message(_message("USERATTACHED", "1"))
+
+    first = mqtt_client.last_seen(device)
+    assert first is not None
+    listener.assert_called_once()
+
+    # Later messages move it forward without notifying again
+    await mqtt_client._handle_status_message(_message("OASIS_STATUS", "4"))
+    assert mqtt_client.last_seen(device) >= first
+    listener.assert_called_once()
+
+    mqtt_client._connected_event.clear()
+    assert mqtt_client.last_seen(device) is None
+
+
+async def test_message_after_ble_lost_access_notifies(
+    mqtt_client: OasisMqttClient, device: OasisDevice
+) -> None:
+    """A message newer than BLE's lost-access report changes reachability."""
+    listener = MagicMock()
+    mqtt_client.add_connection_listener(listener)
+    await mqtt_client._handle_status_message(_message("OASIS_STATUS", "4"))
+    listener.reset_mock()
+
+    # Nothing changes while the device keeps publishing
+    await mqtt_client._handle_status_message(_message("OASIS_STATUS", "4"))
+    listener.assert_not_called()
+
+    # BLE reports remote access lost, then MQTT hears from the device again
+    device.update_from_status_dict(
+        {"remote_access": "inactive", "remote_access_updated": datetime.now(UTC)}
+    )
+    await mqtt_client._handle_status_message(_message("OASIS_STATUS", "4"))
+    listener.assert_called_once()

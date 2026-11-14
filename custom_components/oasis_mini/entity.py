@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC, format_mac
+from homeassistant.helpers.device_registry import (
+    CONNECTION_BLUETOOTH,
+    CONNECTION_NETWORK_MAC,
+    format_mac,
+)
 from homeassistant.helpers.entity import DeviceInfo, EntityDescription
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -42,6 +46,11 @@ class OasisDeviceEntity(CoordinatorEntity[OasisDeviceCoordinator]):
         connections = set()
         if mac_address := device.mac_address:
             connections.add((CONNECTION_NETWORK_MAC, format_mac(mac_address)))
+        connections.update(
+            (CONNECTION_BLUETOOTH, format_mac(address))
+            for address, client in coordinator.ble_clients.items()
+            if client.serial_number == serial_number
+        )
 
         self._attr_device_info = DeviceInfo(
             connections=connections,

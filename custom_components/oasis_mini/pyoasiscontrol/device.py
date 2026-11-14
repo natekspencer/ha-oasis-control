@@ -138,6 +138,12 @@ class OasisDevice:
         self.wifi_sub: str | None = None
         self.environment: str | None = None
         self.schedule: Any | None = None
+        # Whether the device can be controlled remotely through the cloud ("Remote
+        # access" in the app) as last reported over BLE: "active", "inactive" or
+        # "disabled" (by Grounded), and when it was reported. Without it the device
+        # isn't reachable over MQTT
+        self.remote_access: str | None = None
+        self.remote_access_updated: datetime | None = None
 
         # Track metadata cache
         self._track: dict | None = None
@@ -185,7 +191,10 @@ class OasisDevice:
 
     def attach_client(self, client: OasisClientProtocol) -> None:
         """Attach a transport client (MQTT, HTTP, etc.) to this device."""
+        if client is self._client:
+            return
         self._client = client
+        self._notify_listeners()
 
     @property
     def client(self) -> OasisClientProtocol | None:
@@ -239,7 +248,9 @@ class OasisDevice:
             return True
         return False
 
-    def update_from_status_dict(self, data: dict[str, Any]) -> None:
+    def update_from_status_dict(
+        self, data: dict[str, Any], source: OasisClientProtocol | None = None
+    ) -> None:
         """
         Update the device's attributes from a status dictionary.
 
@@ -248,7 +259,18 @@ class OasisDevice:
         refresh is scheduled. If the current track changes without an accompanying `progress`
         value, progress is reset to 0 so the previous track's progress isn't applied to the new
         track. If any attribute changed, registered update listeners are notified.
+
+        When `source` is a transport other than the attached client, fields the attached
+        client reports itself (its `status_fields`) are ignored, so a slower transport
+        (e.g. cloud MQTT) can't overwrite fresher values from the active one (e.g. BLE).
         """
+        if (
+            source is not None
+            and source is not self._client
+            and (owned := getattr(self._client, "status_fields", None))
+        ):
+            data = {k: v for k, v in data.items() if k not in owned}
+
         changed = False
         playlist_or_index_changed = False
         previous_track_id = self.track_id
@@ -342,7 +364,9 @@ class OasisDevice:
 
         return status
 
-    def update_from_status_string(self, raw_status: str) -> None:
+    def update_from_status_string(
+        self, raw_status: str, source: OasisClientProtocol | None = None
+    ) -> None:
         """
         Parse a semicolon-separated device status string and apply the resulting fields to the device state.
 
@@ -350,9 +374,10 @@ class OasisDevice:
 
         Parameters:
             raw_status (str): Raw status payload received from the device (semicolon-separated fields).
+            source (OasisClientProtocol | None): Transport the status came from; see update_from_status_dict.
         """
         if status := self.parse_status_string(raw_status):
-            self.update_from_status_dict(status)
+            self.update_from_status_dict(status, source=source)
 
     def as_dict(self) -> dict[str, Any]:
         """
@@ -693,6 +718,11 @@ class OasisDevice:
             start_playing = self.status_code == STATUS_PLAYING
 
         client = self._require_client()
+        # Checked before stopping, so an oversized playlist leaves playback alone
+        if (limit := getattr(client, "max_playlist_size", None)) and len(
+            playlist
+        ) > limit:
+            raise ValueError(f"Playlists are limited to {limit} tracks")
         await client.async_send_stop_command(self)  # needed before replacing playlist
         await client.async_send_set_playlist_command(self, playlist)
         if start_playing and playlist:

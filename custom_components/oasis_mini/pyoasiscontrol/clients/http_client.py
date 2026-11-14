@@ -2,15 +2,25 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 import logging
-from typing import Any
+from typing import Any, Final
 
-from aiohttp import ClientSession
+from aiohttp import ClientSession, ClientTimeout
 
 from ..device import OasisDevice
 from .transport import OasisClientProtocol
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _normalize_mac(mac: str) -> str:
+    """Return a MAC address without separators, lowercased, for comparison."""
+    return "".join(c for c in mac.lower() if c in "0123456789abcdef")
+
+
+# The device answers on the LAN in well under a second when HTTP mode is on
+REQUEST_TIMEOUT: Final = ClientTimeout(total=5)
 
 
 class OasisHttpClient(OasisClientProtocol):
@@ -19,19 +29,41 @@ class OasisHttpClient(OasisClientProtocol):
     This client is typically used per-device (per host/IP).
     It implements the OasisClientProtocol so OasisDevice can delegate
     all commands through it.
+
+    Firmware 2.60+ only answers once HTTP mode is enabled from the Oasis Control
+    app (tap the serial number on the device page 10 times).
     """
 
-    def __init__(self, host: str, session: ClientSession | None = None) -> None:
+    def __init__(
+        self,
+        host: str,
+        session: ClientSession | None = None,
+        on_command: Callable[[], None] | None = None,
+    ) -> None:
         """
         Initialize the HTTP client for a specific device host.
 
         Parameters:
             host (str): Hostname or IP address of the target device (used to build the base HTTP URL).
             session (ClientSession | None): Optional aiohttp ClientSession to reuse for requests. If omitted, a new session will be created and owned by this client.
+            on_command (Callable[[], None] | None): Called after each successful command, so the caller can refresh the device state (HTTP has no push updates).
         """
-        self._host = host
+        self.host = host
         self._session: ClientSession | None = session
         self._owns_session: bool = session is None
+        self._on_command = on_command
+        self._connected = False
+        # The last valid status the device reported
+        self.last_status: dict[str, Any] | None = None
+
+    @property
+    def is_connected(self) -> bool:
+        """Return `True` if the device last answered GETSTATUS with a valid status.
+
+        Any other answer (e.g. a router's web page after the IP was reassigned)
+        doesn't count, so HTTP is never chosen for something that isn't the device.
+        """
+        return self._connected
 
     @property
     def session(self) -> ClientSession:
@@ -66,7 +98,7 @@ class OasisHttpClient(OasisClientProtocol):
         Returns:
             The device base URL using plain HTTP (no TLS), including a trailing slash (e.g. "http://{host}/").
         """
-        return f"http://{self._host}/"
+        return f"http://{self.host}/"
 
     async def _async_request(self, method: str, url: str, **kwargs: Any) -> Any:
         """
@@ -88,16 +120,22 @@ class OasisHttpClient(OasisClientProtocol):
                 kwargs.get("params"),
             ),
         )
-        resp = await session.request(method, url, **kwargs)
-
-        if resp.status == 200:
+        kwargs.setdefault("timeout", REQUEST_TIMEOUT)
+        # Optional requests (e.g. the schedule) don't decide whether the device is
+        # reachable when they fail
+        optional = kwargs.pop("optional", False)
+        try:
+            resp = await session.request(method, url, **kwargs)
+            resp.raise_for_status()
             if resp.content_type == "text/plain":
                 return await resp.text()
             if resp.content_type == "application/json":
                 return await resp.json()
             return None
-
-        resp.raise_for_status()
+        except Exception:
+            if not optional:
+                self._connected = False
+            raise
 
     async def _async_get(self, **kwargs: Any) -> str | None:
         """
@@ -123,6 +161,8 @@ class OasisHttpClient(OasisClientProtocol):
         """
         result = await self._async_get(**kwargs)
         _LOGGER.debug("Result: %s", result)
+        if self._on_command:
+            self._on_command()
         return result
 
     async def async_get_mac_address(self, device: OasisDevice) -> str | None:
@@ -261,7 +301,7 @@ class OasisHttpClient(OasisClientProtocol):
         """
         await self._async_command(params={"WRIJOBLIST": ",".join(map(str, playlist))})
         # optional: optimistic state update
-        device.update_from_status_dict({"playlist": playlist})
+        device.update_from_status_dict({"playlist": playlist}, source=self)
 
     async def async_send_set_repeat_playlist_command(
         self,
@@ -332,7 +372,20 @@ class OasisHttpClient(OasisClientProtocol):
         """
         await self._async_command(params={"CMDBOOT": ""})
 
-    async def async_get_status(self, device: OasisDevice) -> None:
+    def _check_host(self, host: str) -> None:
+        """Reject a reply if the device has moved away from the host it came from.
+
+        Raises:
+            ValueError: If the device's address is no longer `host`.
+        """
+        if self.host != host:
+            # The reply is from an address that may now belong to something else
+            self._connected = False
+            raise ValueError(f"Device moved from {host} to {self.host}")
+
+    async def async_get_status(
+        self, device: OasisDevice, *, host: str | None = None
+    ) -> None:
         """
         Retrieve the device status from the device and apply it to the given OasisDevice.
 
@@ -340,10 +393,69 @@ class OasisHttpClient(OasisClientProtocol):
 
         Parameters:
             device (OasisDevice): Device instance to update with the fetched status.
+            host (str | None): Host the status must come from (e.g. the one whose
+                identity was just checked); defaults to the current host.
         """
+        host = host or self.host
+        self._check_host(host)
         raw_status = await self._async_get(params={"GETSTATUS": ""})
-        if raw_status is None:
-            return
+        self._check_host(host)
+        # A non-text reply, or text that isn't a status string, isn't the device
+        status = (
+            device.parse_status_string(raw_status)
+            if isinstance(raw_status, str) and ";" in raw_status
+            else None
+        )
+        if status is None:
+            self._connected = False
+            raise ValueError(f"Invalid status from {self.host}: {raw_status!r:.100}")
 
         _LOGGER.debug("Status for %s: %s", device.serial_number, raw_status)
-        device.update_from_status_string(raw_status)
+        self._connected = True
+        self.last_status = status
+        device.update_from_status_dict(status, source=self)
+
+    async def async_get_all(self, device: OasisDevice) -> None:
+        """
+        Fetch the device status, identity and schedule and apply them to the device.
+
+        The MAC address identifies the device: once known, a different MAC at this
+        address means the IP now belongs to another device, so it isn't used. The
+        firmware version is fetched if the status string doesn't include it, since
+        the device isn't initialized without both. The schedule is optional.
+
+        Raises:
+            ValueError: If the address answers as a different device, doesn't
+                confirm its identity, or the device moves during the sync.
+        """
+        # The MAC and status must both come from this host, so a MAC from one
+        # address can't vouch for status from another
+        host = self.host
+        mac = await self._async_get(params={"GETMAC": ""})
+        self._check_host(host)
+        mac = mac.strip() if isinstance(mac, str) else ""
+        if device.mac_address and (
+            not mac or _normalize_mac(mac) != _normalize_mac(device.mac_address)
+        ):
+            # A known device must positively identify itself before it's used
+            self._connected = False
+            raise ValueError(
+                f"{host} is not the expected device ({mac or 'no MAC'}, expected "
+                f"{device.mac_address})"
+            )
+        await self.async_get_status(device, host=host)
+        if mac and not device.mac_address:
+            device.update_from_status_dict({"mac_address": mac}, source=self)
+        if not device.software_version:
+            version = await self._async_get(params={"GETSOFTWAREVER": ""})
+            if isinstance(version, str) and version.strip():
+                device.update_from_status_dict(
+                    {"software_version": version.strip()}, source=self
+                )
+        try:
+            schedule = await self._async_get(params={"GETSCH": ""}, optional=True)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("Unable to fetch the schedule from %s: %s", self.host, err)
+        else:
+            if isinstance(schedule, str):
+                device.update_from_status_dict({"schedule": schedule}, source=self)

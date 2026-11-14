@@ -43,13 +43,26 @@ async def async_setup_entry(
             new_devices (list[OasisDevice]): Devices to create sensor entities for.
 
         Returns:
-            list[OasisDeviceSensorEntity]: A list containing one sensor entity per combination of device and descriptor from DESCRIPTORS.
+            list[SensorEntity]: One sensor entity per device and descriptor in DESCRIPTORS, plus a connection sensor per device.
         """
-        return [
+        entities: list[SensorEntity] = [
             OasisDeviceSensorEntity(entry.runtime_data, device, descriptor)
             for device in new_devices
             for descriptor in DESCRIPTORS
         ]
+        entities.extend(
+            OasisDeviceConnectionSensorEntity(
+                entry.runtime_data, device, CONNECTION_DESCRIPTOR
+            )
+            for device in new_devices
+        )
+        entities.extend(
+            OasisDeviceRemoteAccessSensorEntity(
+                entry.runtime_data, device, REMOTE_ACCESS_DESCRIPTOR
+            )
+            for device in new_devices
+        )
+        return entities
 
     setup_platform_from_coordinator(entry, async_add_entities, make_entities)
 
@@ -71,13 +84,6 @@ DESCRIPTORS = [
         state_class=SensorStateClass.MEASUREMENT,
         suggested_display_precision=1,
     ),
-    SensorEntityDescription(
-        key="last_updated",
-        translation_key="last_updated",
-        device_class=SensorDeviceClass.TIMESTAMP,
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-    ),
 ]
 DESCRIPTORS.extend(
     SensorEntityDescription(
@@ -90,6 +96,15 @@ DESCRIPTORS.extend(
 )
 
 
+CONNECTION_DESCRIPTOR = SensorEntityDescription(
+    key="connection",
+    translation_key="connection",
+    device_class=SensorDeviceClass.ENUM,
+    entity_category=EntityCategory.DIAGNOSTIC,
+    options=["local", "bluetooth", "cloud", "disconnected"],
+)
+
+
 class OasisDeviceSensorEntity(OasisDeviceEntity, SensorEntity):
     """Oasis device sensor entity."""
 
@@ -97,3 +112,43 @@ class OasisDeviceSensorEntity(OasisDeviceEntity, SensorEntity):
     def native_value(self) -> str | int | float | datetime | None:
         """Provide the current sensor value from the underlying device."""
         return getattr(self.device, self.entity_description.key)
+
+
+class OasisDeviceConnectionSensorEntity(OasisDeviceEntity, SensorEntity):
+    """Oasis device connection sensor entity."""
+
+    @property
+    def native_value(self) -> str:
+        """Return how Home Assistant is currently reaching the device."""
+        return self.coordinator.connection_type(self.device)
+
+
+REMOTE_ACCESS_DESCRIPTOR = SensorEntityDescription(
+    key="remote_access",
+    translation_key="remote_access",
+    device_class=SensorDeviceClass.ENUM,
+    entity_category=EntityCategory.DIAGNOSTIC,
+    entity_registry_enabled_default=False,
+    options=["active", "inactive", "disabled"],
+)
+
+
+class OasisDeviceRemoteAccessSensorEntity(OasisDeviceEntity, SensorEntity):
+    """Whether the device can be controlled remotely, "Remote access" in the app.
+
+    Without it, the device can't be reached through the cloud broker (MQTT).
+    "disabled" means Grounded has turned it off for the device.
+    """
+
+    @property
+    def native_value(self) -> str | None:
+        """Return the device's remote access state, if known."""
+        # A device publishing over the cloud broker is evidently connected to it,
+        # unless BLE has reported otherwise since
+        seen = self.coordinator.mqtt_last_seen(self.device)
+        reported = self.device.remote_access_updated
+        if seen is not None and (reported is None or seen >= reported):
+            return "active"
+        # Otherwise BLE's report is used; a quiet broker alone doesn't prove the
+        # device is offline, so it's unknown without one
+        return self.device.remote_access

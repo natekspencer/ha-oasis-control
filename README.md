@@ -58,6 +58,50 @@ Alternatively:
 4. Follow the instructions to add the integration to your Home Assistant
 <!-- END AUTO-GENERATED INSTALLATION -->
 
+## 📡 Connecting to your Oasis
+
+The integration talks to each Oasis over the best connection available, in this order:
+
+1. **Local network (HTTP)** – fastest and doesn't depend on the cloud. Requires HTTP mode (see below).
+2. **Bluetooth** – used when HTTP isn't available and the table is in range of Home Assistant's Bluetooth (on by default).
+3. **Cloud (MQTT)** – the last resort; requires **Remote access** to be active on the device.
+
+It switches automatically as connections come and go. The **Connection type** diagnostic sensor on each device shows which one is in use (`Local network`, `Bluetooth`, `Cloud` or `Disconnected`).
+
+The **Connection** diagnostic sensor shows whether the table is reachable and has answered recently. It turns to `Disconnected` as soon as no connection works (when **Connection type** shows `Disconnected`) or when nothing has been heard from the table for 3 minutes, and only changes state when that happens, so it suits alerts and automations.
+
+If the Oasis cloud is down, tables that were set up before keep working over the local network and Bluetooth, including after a Home Assistant restart. Track images and names that come from the cloud may be missing until it's back.
+
+### Enabling HTTP mode
+
+Newer firmware turns off the table's local HTTP interface by default. To turn it on:
+
+1. Make sure your phone has Bluetooth on and is near the table.
+2. Open the **Oasis Control** app and go to your device's settings page.
+3. Tap the **serial number** 10 times. The app counts down the last few taps, then enables HTTP mode.
+
+Home Assistant finds the table's IP address (from the Oasis cloud, the table itself, or DHCP discovery) and picks up the local connection within a minute. No restart of Home Assistant is needed.
+
+> ⚠️ **HTTP mode turns off whenever the table restarts** (a power cut, a reboot or a firmware update). Turn it back on in the app as above, or press the table's **Enable HTTP mode** button in Home Assistant (under the device's configuration entities). The button is available while Home Assistant is connected to the table over [Bluetooth](#bluetooth), and switches to the local connection right away.
+
+> 💡 Give the table a DHCP reservation on your router so its IP address doesn't change.
+
+### Bluetooth
+
+When the Home Assistant [Bluetooth integration](https://www.home-assistant.io/integrations/bluetooth/) is set up (a Bluetooth proxy works), Home Assistant connects to tables in range over Bluetooth. Over Bluetooth the table pushes playback updates instantly, and Home Assistant asks it for its other settings every 10 seconds.
+
+The table accepts a single Bluetooth connection, so while Home Assistant holds it the Oasis Control app can't connect over Bluetooth. To free it for the app, turn off the table's **Connect over Bluetooth** switch (under the device's configuration entities). This only stops Home Assistant connecting; the table's own Bluetooth stays on. Turning it back on reconnects; neither requires a restart.
+
+### Remote access inactive
+
+If the Oasis Control app shows **Remote access inactive**, the table can't be controlled remotely through the Oasis cloud, so Home Assistant can't reach it over the cloud connection either. Use HTTP mode or Bluetooth instead. Tapping that message in the app and setting up the table's Wi‑Fi again may restore remote access, but it doesn't always work: the app may ask you to contact Oasis support instead.
+
+These diagnostic entities show the related status in Home Assistant:
+
+- **Remote access** (disabled by default): the same state as the app: `Active`, `Inactive` or `Disabled`. It's read over Bluetooth, or shown as `Active` while the table is reporting through the cloud, and is unknown otherwise.
+- **Connection type** and **Connection**: how Home Assistant is reaching the table, and whether it's responding.
+- **Wi‑Fi status** (disabled by default): whether the table reports being connected to Wi‑Fi.
+
 ## 🎬 Actions
 
 The media player entity supports various actions, including managing the playlist queue. You can specify a track by its ID or name. If using a track name, it must match an entry in the [tracks list](custom_components/oasis_mini/pyoasiscontrol/tracks.json). To specify multiple tracks, separate them with commas. An example is below:

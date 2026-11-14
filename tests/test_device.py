@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
 
 from custom_components.oasis_mini.pyoasiscontrol import OasisDevice
@@ -73,3 +75,32 @@ def test_parse_status_string() -> None:
     assert status["brightness"] == 150
     assert status["color"] == "#FFFFFF"
     assert status["software_version"] == "2.60"
+
+
+def test_status_string_from_other_transport_respects_owner() -> None:
+    """A status string from a non-active transport can't overwrite owned fields."""
+    device = OasisDevice(model="Oasis Mini", serial_number="OM1")
+    owner = MagicMock(status_fields=frozenset({"status_code"}))
+    device.attach_client(owner)
+    device.update_from_status_dict({"status_code": 4}, source=owner)
+
+    device.update_from_status_string(
+        "2;0;300;101,102;0;50;21;0;0;100;#d2b48c;0;0;200;1;1;6;1;3.54",
+        source=MagicMock(),
+    )
+
+    assert device.status_code == 4
+    assert device.ball_speed == 300
+
+
+async def test_oversized_playlist_rejected_before_stopping() -> None:
+    """A playlist too long for the transport is refused without stopping playback."""
+    device = OasisDevice(model="Oasis Mini", serial_number="OM1")
+    client = MagicMock(max_playlist_size=40)
+    client.async_send_stop_command = AsyncMock()
+    device.attach_client(client)
+
+    with pytest.raises(ValueError, match="40"):
+        await device.async_set_playlist(list(range(1, 42)))
+
+    client.async_send_stop_command.assert_not_awaited()

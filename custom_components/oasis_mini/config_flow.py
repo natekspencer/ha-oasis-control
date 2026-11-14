@@ -12,13 +12,16 @@ import voluptuous as vol
 
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.const import CONF_ACCESS_TOKEN, CONF_EMAIL, CONF_PASSWORD
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.selector import (
     QrCodeSelector,
     QrCodeSelectorConfig,
     QrErrorCorrectionLevel,
 )
+from homeassistant.helpers.service_info.dhcp import DhcpServiceInfo
 
 from .const import DOMAIN
+from .coordinator import async_add_discovered_host
 from .helpers import create_client
 from .pyoasiscontrol import OasisCloudClient, UnauthenticatedError
 
@@ -47,6 +50,40 @@ class OasisDeviceConfigFlow(ConfigFlow, domain=DOMAIN):
     _email: str | None = None
     _challenge: dict[str, Any] | None = None
     _credentials_step: str = "user"
+
+    async def async_step_dhcp(
+        self, discovery_info: DhcpServiceInfo
+    ) -> ConfigFlowResult:
+        """Pass a known device's current IP address on to its coordinator.
+
+        Home Assistant only starts this for MAC addresses already registered to the
+        integration, so it never offers a new setup; it keeps the local HTTP address
+        current even when the cloud has a stale one. The device is matched through
+        the device registry, so this also works before the device has been reached
+        since startup (when its MAC address isn't known yet).
+        """
+        device_entry = dr.async_get(self.hass).async_get_device(
+            connections={
+                (dr.CONNECTION_NETWORK_MAC, dr.format_mac(discovery_info.macaddress))
+            }
+        )
+        serials = {
+            serial
+            for domain, serial in (device_entry.identifiers if device_entry else ())
+            if domain == DOMAIN
+        }
+        for entry_id in device_entry.config_entries if device_entry else ():
+            entry = self.hass.config_entries.async_get_entry(entry_id)
+            if entry is None or entry.domain != DOMAIN:
+                continue
+            # Home Assistant doesn't report the same sighting again, so it's handed
+            # to the entry's coordinator while it's loaded or setting up, and kept
+            # for its next setup otherwise
+            for serial in serials:
+                await async_add_discovered_host(
+                    self.hass, entry.entry_id, serial, discovery_info.ip
+                )
+        return self.async_abort(reason="already_configured")
 
     async def async_step_reauth(
         self, entry_data: Mapping[str, Any]

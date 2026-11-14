@@ -54,6 +54,18 @@ async def async_setup_entry(
 
     setup_platform_from_coordinator(entry, async_add_entities, make_entities)
 
+    if entry.runtime_data.bluetooth_available:
+        setup_platform_from_coordinator(
+            entry,
+            async_add_entities,
+            lambda new_devices: [
+                OasisDeviceEnableHttpButtonEntity(
+                    entry.runtime_data, device, ENABLE_HTTP_DESCRIPTOR
+                )
+                for device in new_devices
+            ],
+        )
+
 
 async def play_random_track(device: OasisDevice) -> None:
     """
@@ -113,3 +125,33 @@ class OasisDeviceButtonEntity(OasisDeviceEntity, ButtonEntity):
         Calls the entity description's `press_fn` with the device to perform the button's effect.
         """
         await self.entity_description.press_fn(self.device)
+
+
+ENABLE_HTTP_DESCRIPTOR = ButtonEntityDescription(
+    key="enable_http_mode",
+    translation_key="enable_http_mode",
+    entity_category=EntityCategory.CONFIG,
+)
+
+
+class OasisDeviceEnableHttpButtonEntity(OasisDeviceEntity, ButtonEntity):
+    """Button that turns on the device's local HTTP API over Bluetooth.
+
+    HTTP mode turns off whenever the table restarts, and can only be turned on
+    over Bluetooth, so the button is only available while that's connected.
+    """
+
+    @property
+    def available(self) -> bool:
+        """Return whether Home Assistant is connected to the device over Bluetooth.
+
+        Bluetooth is local, so this doesn't follow the cloud refresh like other
+        entities: it stays usable while the refresh fails (e.g. during reauth).
+        """
+        return any(
+            d is self.device for d in self.coordinator.data or []
+        ) and self.coordinator.bluetooth_connected(self.device)
+
+    async def async_press(self) -> None:
+        """Turn on HTTP mode and switch to the local connection."""
+        await self.coordinator.async_enable_http_mode(self.device)
