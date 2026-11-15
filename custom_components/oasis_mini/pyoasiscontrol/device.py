@@ -67,7 +67,7 @@ class OasisDevice:
     OasisClientProtocol (MQTT, HTTP, etc.) via `attach_client`.
     """
 
-    manufacturer: Final = "Kinetic Oasis"
+    manufacturer: Final = "Grounded Labs"
 
     def __init__(
         self,
