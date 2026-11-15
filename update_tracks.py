@@ -26,10 +26,10 @@ def get_author_name(data: dict) -> str:
             {"author": {"user": {"name": ..., "nickname": ...}}}.
 
     Returns:
-        str: The author's `name` if present, otherwise the author's `nickname`, otherwise "Kinetic Oasis".
+        str: The author's `name` if present, otherwise the author's `nickname`, otherwise "Oasis Device".
     """
     author = (data.get("author") or {}).get("user") or {}
-    return author.get("name") or author.get("nickname") or "Kinetic Oasis"
+    return author.get("name") or author.get("nickname") or "Oasis Device"
 
 
 def write_tracks(tracks: dict[int, dict[str, Any]]) -> None:
