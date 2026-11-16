@@ -59,6 +59,13 @@
       "busy": {
         "name": "Upptagen"
       },
+      "remote_access": {
+        "name": "Fjärråtkomst",
+        "state": {
+          "off": "Inaktiv",
+          "on": "Aktiv"
+        }
+      },
       "responding": {
         "name": "Anslutning"
       },
@@ -143,14 +150,6 @@
       },
       "led_color_id": {
         "name": "LED-färg-ID"
-      },
-      "remote_access": {
-        "name": "Fjärråtkomst",
-        "state": {
-          "active": "Aktiv",
-          "inactive": "Inaktiv",
-          "disabled": "Avstängd"
-        }
       },
       "status": {
         "name": "Status",

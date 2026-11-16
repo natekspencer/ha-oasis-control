@@ -80,8 +80,10 @@ _STATUS_FIELDS: Final = _BASE_FIELDS | frozenset(
 )
 
 
-# WIFISTATUS "mqtt" values => the app's remote access states
-_REMOTE_ACCESS: Final = {"0": "inactive", "1": "active", "2": "disabled"}
+# WIFISTATUS "mqtt" values => the app's remote access states. A device that can't
+# reach the broker alternates between 0 and 2 (e.g. idle and retrying) while its
+# time since the last broker contact keeps growing, so both mean inactive
+_REMOTE_ACCESS: Final = {"0": "inactive", "1": "active", "2": "inactive"}
 
 
 def _has_value(value: Any) -> bool:
@@ -145,6 +147,9 @@ class OasisBleClient(OasisClientProtocol):
 
         self.serial_number: str | None = None
         self.legacy_firmware = False
+        # While set, the client stays disconnected (see async_disconnect) instead
+        # of reconnecting for a request
+        self.suspended = False
         self.mqtt_connected: bool | None = None
         self.internet_connected: bool | None = None
         # Whether the device's local HTTP API is on, as last reported; it turns off
@@ -179,14 +184,12 @@ class OasisBleClient(OasisClientProtocol):
         """
         if self.is_connected:
             return
-        if self._closed:
-            raise BleakError(f"Oasis device {self.address} was closed")
+        self._raise_if_unusable()
 
         async with self._connect_lock:
             if self.is_connected:
                 return
-            if self._closed:
-                raise BleakError(f"Oasis device {self.address} was closed")
+            self._raise_if_unusable()
 
             if not (ble_device := self._ble_device_callback()):
                 raise BleakError(f"Oasis device {self.address} not found")
@@ -204,8 +207,7 @@ class OasisBleClient(OasisClientProtocol):
                 await client.start_notify(
                     OASIS_CHARACTERISTIC_UUID, self._handle_notification
                 )
-                if self._closed:
-                    raise BleakError(f"Oasis device {self.address} was closed")
+                self._raise_if_unusable()
             except BaseException:
                 # Includes cancellation, so a half-made connection is never left up
                 self._closing = True
@@ -215,6 +217,31 @@ class OasisBleClient(OasisClientProtocol):
             self._client = client
             self._rx_buffer = ""
             _LOGGER.info("Connected to Oasis BLE device %s", self.address)
+
+    def _raise_if_unusable(self) -> None:
+        """Raise if the client was closed or suspended, so it doesn't connect."""
+        if self._closed:
+            raise BleakError(f"Oasis device {self.address} was closed")
+        if self.suspended:
+            raise BleakError(f"Oasis device {self.address} is suspended")
+
+    async def async_disconnect(self) -> None:
+        """Disconnect from a suspended device, keeping the client for reconnecting.
+
+        Does nothing if the client was resumed (`suspended` cleared) meanwhile.
+        """
+        async with self._connect_lock:
+            if not self.suspended:
+                return
+            self._closing = True
+            client, self._client = self._client, None
+            self.synced = False
+            self._fail_waiters(BleakError(f"Oasis device {self.address} suspended"))
+            if client is not None and client.is_connected:
+                try:
+                    await client.disconnect()
+                except BleakError as err:
+                    _LOGGER.debug("Error disconnecting from %s: %s", self.address, err)
 
     async def async_close(self) -> None:
         """Disconnect from the device."""

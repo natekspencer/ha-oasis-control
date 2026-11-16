@@ -37,7 +37,28 @@ class OasisBinarySensorEntityDescription(
 ):
     """Oasis device binary sensor entity description."""
 
-    is_on_fn: Callable[[OasisDeviceCoordinator, OasisDevice], bool]
+    is_on_fn: Callable[[OasisDeviceCoordinator, OasisDevice], bool | None]
+
+
+def remote_access(
+    coordinator: OasisDeviceCoordinator, device: OasisDevice
+) -> bool | None:
+    """Return whether the device can be controlled remotely, if known.
+
+    This is "Remote access" in the app: without it, the device can't be reached
+    through the cloud broker (MQTT).
+    """
+    # A device publishing over the cloud broker is evidently connected to it,
+    # unless BLE has reported otherwise since
+    seen = coordinator.mqtt_last_seen(device)
+    reported = device.remote_access_updated
+    if seen is not None and (reported is None or seen >= reported):
+        return True
+    # Otherwise BLE's report is used; a quiet broker alone doesn't prove the
+    # device is offline, so it's unknown without one
+    if device.remote_access is None:
+        return None
+    return device.remote_access == "active"
 
 
 DESCRIPTORS = (
@@ -55,6 +76,14 @@ DESCRIPTORS = (
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
         is_on_fn=lambda _, device: device.wifi_connected,
+    ),
+    OasisBinarySensorEntityDescription(
+        key="remote_access",
+        translation_key="remote_access",
+        device_class=BinarySensorDeviceClass.CONNECTIVITY,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        is_on_fn=remote_access,
     ),
     # Whether the device is reachable and has been heard from recently, over any
     # connection. Unlike a last-updated timestamp, it only changes state when the
@@ -78,6 +107,6 @@ class OasisDeviceBinarySensorEntity(OasisDeviceEntity, BinarySensorEntity):
     entity_description: OasisBinarySensorEntityDescription
 
     @property
-    def is_on(self) -> bool:
+    def is_on(self) -> bool | None:
         """Return whether the binary sensor is on."""
         return self.entity_description.is_on_fn(self.coordinator, self.device)

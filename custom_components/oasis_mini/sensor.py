@@ -40,26 +40,6 @@ class OasisSensorEntityDescription(OasisEntityDescription, SensorEntityDescripti
     value_fn: Callable[[OasisDeviceCoordinator, OasisDevice], StateType]
 
 
-def remote_access(
-    coordinator: OasisDeviceCoordinator, device: OasisDevice
-) -> str | None:
-    """Return whether the device can be controlled remotely, if known.
-
-    This is "Remote access" in the app: without it, the device can't be reached
-    through the cloud broker (MQTT). "disabled" means Grounded has turned it off
-    for the device.
-    """
-    # A device publishing over the cloud broker is evidently connected to it,
-    # unless BLE has reported otherwise since
-    seen = coordinator.mqtt_last_seen(device)
-    reported = device.remote_access_updated
-    if seen is not None and (reported is None or seen >= reported):
-        return "active"
-    # Otherwise BLE's report is used; a quiet broker alone doesn't prove the
-    # device is offline, so it's unknown without one
-    return device.remote_access
-
-
 DESCRIPTORS = (
     OasisSensorEntityDescription(
         key="download_progress",
@@ -109,15 +89,6 @@ DESCRIPTORS = (
         # How the device is reached doesn't depend on the cloud refresh
         local_only=True,
         value_fn=lambda coordinator, device: coordinator.connection_type(device),
-    ),
-    OasisSensorEntityDescription(
-        key="remote_access",
-        translation_key="remote_access",
-        device_class=SensorDeviceClass.ENUM,
-        entity_category=EntityCategory.DIAGNOSTIC,
-        entity_registry_enabled_default=False,
-        options=["active", "inactive", "disabled"],
-        value_fn=remote_access,
     ),
 )
 

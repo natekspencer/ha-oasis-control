@@ -103,6 +103,23 @@ def connection_state(hass: HomeAssistant) -> str:
     return state.state
 
 
+BLE_ADDRESS = "AA:BB:CC:DD:EE:FF"
+
+
+def ble_stub(**attrs: Any) -> MagicMock:
+    """Return a mock Bluetooth client for the test device."""
+    client = MagicMock(spec=OasisBleClient)
+    client.address = BLE_ADDRESS
+    client.serial_number = SERIAL_NUMBER
+    client.is_connected = True
+    client.suspended = False
+    client.async_get_all = AsyncMock()
+    client.async_disconnect = AsyncMock()
+    for name, value in attrs.items():
+        setattr(client, name, value)
+    return client
+
+
 async def setup(hass: HomeAssistant, entry: MockConfigEntry) -> OasisDeviceCoordinator:
     """Return the coordinator once the first HTTP poll has run."""
     coordinator = entry.runtime_data
@@ -181,17 +198,178 @@ async def test_http_lost_falls_back_to_bluetooth(
     coordinator = await setup(hass, init_integration)
     device = coordinator.data[0]
 
-    ble_client = MagicMock(spec=OasisBleClient)
-    ble_client.serial_number = SERIAL_NUMBER
-    ble_client.is_connected = True
-    ble_client.async_get_all = AsyncMock()
-    coordinator.ble_clients["AA:BB:CC:DD:EE:FF"] = ble_client
+    # Not yet suspended, e.g. it was found moments before HTTP was lost
+    ble_client = ble_stub()
+    coordinator.ble_clients[BLE_ADDRESS] = ble_client
 
     mock_device_offline(aioclient_mock)
     await poll(hass, coordinator)
 
     assert device.client is ble_client
     ble_client.async_get_all.assert_awaited_once_with(device)
+
+
+async def test_http_suspends_bluetooth(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    init_integration: MockConfigEntry,
+) -> None:
+    """Bluetooth is disconnected while HTTP is in use, freeing it for the app."""
+    mock_device_offline(aioclient_mock)
+    coordinator = await setup(hass, init_integration)
+    device = coordinator.data[0]
+    ble = ble_stub()
+    coordinator.ble_clients[BLE_ADDRESS] = ble
+    device.attach_client(ble)
+
+    mock_device(aioclient_mock)
+    await poll(hass, coordinator)
+    await poll(hass, coordinator)
+
+    assert isinstance(device.client, OasisHttpClient)
+    assert ble.suspended
+    ble.async_disconnect.assert_awaited_once()
+    # Kept, so it can reconnect when HTTP is lost
+    assert coordinator.ble_clients[BLE_ADDRESS] is ble
+
+
+async def test_http_lost_resumes_bluetooth(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    init_integration: MockConfigEntry,
+) -> None:
+    """Losing HTTP reconnects suspended Bluetooth right away and switches to it."""
+    mock_device(aioclient_mock)
+    coordinator = await setup(hass, init_integration)
+    device = coordinator.data[0]
+    ble = ble_stub(is_connected=False, suspended=True)
+
+    async def _connect() -> None:
+        assert not ble.suspended
+        ble.is_connected = True
+
+    ble.async_connect = AsyncMock(side_effect=_connect)
+    ble.legacy_firmware = False
+    coordinator.ble_clients[BLE_ADDRESS] = ble
+
+    mock_device_offline(aioclient_mock)
+    with patch(
+        "homeassistant.components.bluetooth.async_address_present", return_value=True
+    ):
+        await poll(hass, coordinator)
+
+    assert not ble.suspended
+    ble.async_connect.assert_awaited_once()
+    assert device.client is ble
+    ble.async_get_all.assert_awaited_with(device)
+    ble.async_disconnect.assert_not_awaited()
+
+
+async def test_resume_out_of_range_leaves_no_reconnect_task(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    init_integration: MockConfigEntry,
+) -> None:
+    """A resume that finds the table out of range doesn't block later reconnects."""
+    mock_device(aioclient_mock)
+    coordinator = await setup(hass, init_integration)
+    ble = ble_stub(is_connected=False, suspended=True)
+    ble.async_close = AsyncMock()
+    coordinator.ble_clients[BLE_ADDRESS] = ble
+
+    mock_device_offline(aioclient_mock)
+    with patch(
+        "homeassistant.components.bluetooth.async_address_present", return_value=False
+    ):
+        await poll(hass, coordinator)
+
+    assert BLE_ADDRESS not in coordinator.ble_clients
+    assert BLE_ADDRESS not in coordinator._ble_reconnect_tasks
+
+
+async def test_cancelled_reconnect_keeps_its_replacement(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    init_integration: MockConfigEntry,
+) -> None:
+    """A cancelled reconnect still cleaning up doesn't drop its replacement's entry."""
+    mock_device(aioclient_mock)
+    coordinator = await setup(hass, init_integration)
+    device = coordinator.data[0]
+    connecting = asyncio.Event()
+    cleanup = asyncio.Event()
+    ble = ble_stub(is_connected=False)
+
+    async def _connect() -> None:
+        try:
+            connecting.set()
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # Like tearing down a half-made connection
+            await cleanup.wait()
+            raise
+
+    ble.async_connect = AsyncMock(side_effect=_connect)
+    coordinator.ble_clients[BLE_ADDRESS] = ble
+
+    with patch(
+        "homeassistant.components.bluetooth.async_address_present", return_value=True
+    ):
+        coordinator._async_resume_ble(ble, device)
+        await connecting.wait()
+        first = coordinator._ble_reconnect_tasks[BLE_ADDRESS]
+        coordinator._async_suspend_ble(ble)
+        await asyncio.sleep(0)
+        connecting.clear()
+        coordinator._async_resume_ble(ble, device)
+        replacement = coordinator._ble_reconnect_tasks[BLE_ADDRESS]
+        cleanup.set()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert first.done()
+        assert coordinator._ble_reconnect_tasks.get(BLE_ADDRESS) is replacement
+        replacement.cancel()
+        await hass.async_block_till_done()
+
+
+async def test_bluetooth_found_during_http_synced_then_suspended(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    init_integration: MockConfigEntry,
+) -> None:
+    """A table found over Bluetooth while on HTTP is synced once, then suspended."""
+    mock_device(aioclient_mock)
+    coordinator = await setup(hass, init_integration)
+    device = coordinator.data[0]
+    ble = ble_stub(legacy_firmware=False)
+    ble.async_get_serial_number = AsyncMock(return_value=SERIAL_NUMBER)
+
+    suspended_during_sync: list[bool] = []
+
+    async def _sync(_device: object) -> None:
+        # An HTTP poll during the sync doesn't cut it short
+        await poll(hass, coordinator)
+        suspended_during_sync.append(ble.suspended)
+
+    ble.async_get_all.side_effect = _sync
+
+    with (
+        patch(
+            "custom_components.oasis_mini.coordinator.OasisBleClient",
+            return_value=ble,
+        ),
+        patch.object(coordinator, "_async_ble_retry", AsyncMock(return_value=True)),
+        patch("homeassistant.components.bluetooth.async_ble_device_from_address"),
+    ):
+        await coordinator._async_probe_ble(BLE_ADDRESS)
+    await hass.async_block_till_done()
+
+    ble.async_get_all.assert_awaited_once_with(device)
+    assert suspended_during_sync == [False]
+    assert isinstance(device.client, OasisHttpClient)
+    assert ble.suspended
+    ble.async_disconnect.assert_awaited_once()
 
 
 async def test_http_command_refreshes_status(
@@ -368,11 +546,8 @@ async def test_http_takeover_applies_owned_fields(
     mock_device_offline(aioclient_mock)
     coordinator = await setup(hass, init_integration)
     device = coordinator.data[0]
-    ble = MagicMock(spec=OasisBleClient)
-    ble.serial_number = SERIAL_NUMBER
-    ble.is_connected = True
-    ble.status_fields = frozenset({"playlist", "playlist_index", "progress"})
-    coordinator.ble_clients["AA:BB:CC:DD:EE:FF"] = ble
+    ble = ble_stub(status_fields=frozenset({"playlist", "playlist_index", "progress"}))
+    coordinator.ble_clients[BLE_ADDRESS] = ble
     device.attach_client(ble)
     device.update_from_status_dict({"playlist": [301]}, source=ble)
 

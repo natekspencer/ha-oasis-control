@@ -304,6 +304,50 @@ async def test_connection_completing_after_close_dropped(
     assert not client.is_connected
 
 
+async def test_suspended_client_stays_disconnected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A suspended client disconnects and won't reconnect until resumed."""
+    connection = MagicMock(is_connected=True)
+    connection.start_notify = AsyncMock()
+    connection.disconnect = AsyncMock()
+    establish = AsyncMock(return_value=connection)
+    monkeypatch.setattr(ble_client, "establish_connection", establish)
+    client = OasisBleClient(ADDRESS, lambda: MagicMock())
+    on_disconnect = MagicMock()
+    client._on_disconnect = on_disconnect
+    await client.async_connect()
+
+    client.suspended = True
+    await client.async_disconnect()
+
+    connection.disconnect.assert_awaited_once()
+    assert not client.is_connected
+    with pytest.raises(ble_client.BleakError):
+        await client.async_get_status(MagicMock())
+    establish.assert_awaited_once()
+
+    # The disconnect it asked for isn't reported as an unexpected one
+    client._handle_disconnect(connection)
+    on_disconnect.assert_not_called()
+
+    client.suspended = False
+    await client.async_connect()
+    assert client.is_connected
+    assert establish.await_count == 2
+
+
+async def test_disconnect_skipped_once_resumed(client: OasisBleClient) -> None:
+    """A suspension undone before its disconnect runs leaves the client connected."""
+    connection = client._client
+    connection.disconnect = AsyncMock()
+
+    await client.async_disconnect()
+
+    connection.disconnect.assert_not_awaited()
+    assert client.is_connected
+
+
 async def test_queued_connect_after_close_stays_closed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -427,7 +471,7 @@ async def test_disconnect_during_write_pacing(
 
 @pytest.mark.parametrize(
     ("mqtt", "remote_access"),
-    [("1", "active"), ("0", "inactive"), ("2", "disabled")],
+    [("1", "active"), ("0", "inactive"), ("2", "inactive")],
 )
 def test_remote_access_from_wifi_status(
     client: OasisBleClient, device: OasisDevice, mqtt: str, remote_access: str
