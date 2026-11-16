@@ -10,10 +10,7 @@
 
 <!-- END AUTO-GENERATED HEADER -->
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="custom_components/oasis_mini/brand/dark_logo.png">
-  <img alt="Oasis Mini logo" src="custom_components/oasis_mini/brand/logo.png">
-</picture>
+<img alt="Oasis Control icon" src="custom_components/oasis_mini/brand/icon@2x.png" width="128">
 
 # Oasis Control for Home Assistant
 
