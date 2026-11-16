@@ -13,5 +13,5 @@ isal
 pip>=26.3
 pre-commit
 pytest-homeassistant
-ruff>=0.17.4
+ruff>=0.17.5
 zlib-ng
