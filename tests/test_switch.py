@@ -59,6 +59,7 @@ def connected_ble_client() -> MagicMock:
     client.address = ADDRESS
     client.serial_number = SERIAL_NUMBER
     client.is_connected = True
+    client.suspended = False
     client.async_close = AsyncMock()
     return client
 

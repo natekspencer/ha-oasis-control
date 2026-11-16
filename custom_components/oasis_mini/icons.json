@@ -38,8 +38,7 @@
         "default": "mdi:cloud-question-outline",
         "state": {
           "active": "mdi:cloud-check-outline",
-          "inactive": "mdi:cloud-off-outline",
-          "disabled": "mdi:cloud-cancel-outline"
+          "inactive": "mdi:cloud-off-outline"
         }
       },
       "status": {

@@ -82,15 +82,15 @@ Newer firmware turns off the table's local HTTP interface by default. To turn it
 
 Home Assistant finds the table's IP address (from the Oasis cloud, the table itself, or DHCP discovery) and picks up the local connection within a minute. No restart of Home Assistant is needed.
 
-> ⚠️ **HTTP mode turns off whenever the table restarts** (a power cut, a reboot or a firmware update). Turn it back on in the app as above, or press the table's **Enable HTTP mode** button in Home Assistant (under the device's configuration entities). The button is available while Home Assistant is connected to the table over [Bluetooth](#bluetooth), and switches to the local connection right away.
+> ⚠️ **HTTP mode turns off whenever the table restarts** (a power cut, a reboot or a firmware update). Turn it back on in the app as above, or press the table's **Enable HTTP mode** button in Home Assistant (under the device's configuration entities). The button is available while Home Assistant is connected to the table over [Bluetooth](#bluetooth), which it reconnects as soon as the local connection is lost. Pressing it switches to the local connection right away.
 
 > 💡 Give the table a DHCP reservation on your router so its IP address doesn't change.
 
 ### Bluetooth
 
-When the Home Assistant [Bluetooth integration](https://www.home-assistant.io/integrations/bluetooth/) is set up (a Bluetooth proxy works), Home Assistant connects to tables in range over Bluetooth. Over Bluetooth the table pushes playback updates instantly, and Home Assistant asks it for its other settings every 10 seconds.
+When the Home Assistant [Bluetooth integration](https://www.home-assistant.io/integrations/bluetooth/) is set up (a Bluetooth proxy works), Home Assistant connects to tables in range over Bluetooth whenever the local network (HTTP) isn't available. While HTTP works, Home Assistant disconnects from Bluetooth, and reconnects as soon as HTTP is lost. Over Bluetooth the table pushes playback updates instantly, and Home Assistant asks it for its other settings every 10 seconds.
 
-The table accepts a single Bluetooth connection, so while Home Assistant holds it the Oasis Control app can't connect over Bluetooth. To free it for the app, turn off the table's **Connect over Bluetooth** switch (under the device's configuration entities). This only stops Home Assistant connecting; the table's own Bluetooth stays on. Turning it back on reconnects; neither requires a restart.
+The table accepts a single Bluetooth connection, so while Home Assistant holds it the Oasis Control app can't connect over Bluetooth. To free it for the app even when HTTP isn't available, turn off the table's **Connect over Bluetooth** switch (under the device's configuration entities). This only stops Home Assistant connecting; the table's own Bluetooth stays on. Turning it back on reconnects; neither requires a restart.
 
 ### Remote access inactive
 
@@ -98,7 +98,7 @@ If the Oasis Control app shows **Remote access inactive**, the table can't be co
 
 These diagnostic entities show the related status in Home Assistant:
 
-- **Remote access** (disabled by default): the same state as the app: `Active`, `Inactive` or `Disabled`. It's read over Bluetooth, or shown as `Active` while the table is reporting through the cloud, and is unknown otherwise.
+- **Remote access** (disabled by default): the same state as the app: `Active` or `Inactive`. It's read over Bluetooth when Home Assistant connects (the last reading is kept while it's using HTTP instead), or shown as `Active` while the table is reporting through the cloud, and is unknown otherwise.
 - **Connection type** and **Connection**: how Home Assistant is reaching the table, and whether it's responding.
 - **Wi‑Fi status** (disabled by default): whether the table reports being connected to Wi‑Fi.
 

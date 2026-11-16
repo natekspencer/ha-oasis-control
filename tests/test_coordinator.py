@@ -67,6 +67,7 @@ def _ble_client(**attrs: object) -> MagicMock:
     client.address = "AA:AA:AA:AA:AA:AA"
     client.serial_number = SERIAL_NUMBER
     client.is_connected = True
+    client.suspended = False
     client.legacy_firmware = False
     client.synced = True
     client.async_get_status = AsyncMock()

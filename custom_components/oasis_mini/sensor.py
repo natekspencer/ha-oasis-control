@@ -46,8 +46,7 @@ def remote_access(
     """Return whether the device can be controlled remotely, if known.
 
     This is "Remote access" in the app: without it, the device can't be reached
-    through the cloud broker (MQTT). "disabled" means Grounded has turned it off
-    for the device.
+    through the cloud broker (MQTT).
     """
     # A device publishing over the cloud broker is evidently connected to it,
     # unless BLE has reported otherwise since
@@ -116,7 +115,7 @@ DESCRIPTORS = (
         device_class=SensorDeviceClass.ENUM,
         entity_category=EntityCategory.DIAGNOSTIC,
         entity_registry_enabled_default=False,
-        options=["active", "inactive", "disabled"],
+        options=["active", "inactive"],
         value_fn=remote_access,
     ),
 )

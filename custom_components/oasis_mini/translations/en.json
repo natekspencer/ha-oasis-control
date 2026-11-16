@@ -148,8 +148,7 @@
         "name": "Remote access",
         "state": {
           "active": "Active",
-          "inactive": "Inactive",
-          "disabled": "Disabled"
+          "inactive": "Inactive"
         }
       },
       "status": {

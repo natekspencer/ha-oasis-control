@@ -173,6 +173,9 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         self.bluetooth_available = False
         self._ble_reconnect_tasks: dict[str, asyncio.Task[None]] = {}
         self._ble_polling: set[str] = set()
+        # Newly identified clients doing their first sync, which isn't cut short
+        # by suspending them for local HTTP
+        self._ble_syncing: set[str] = set()
 
         # Last IP address the cloud reported for each device, by serial number
         self._cloud_ips: dict[str, str] = {}
@@ -765,18 +768,71 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         always attached as the last resort since it buffers commands until connected.
         """
         client: OasisClientProtocol
+        ble = self._ble_client_for(device.serial_number)
         if (http := self.http_clients.get(device.serial_number or "")) and (
             http.is_connected
         ):
             client, name = http, "local HTTP"
-        elif (ble := self._ble_client_for(device.serial_number)) and ble.is_connected:
+        elif ble and ble.is_connected:
             client, name = ble, "Bluetooth"
         else:
             client, name = self.mqtt_client, "cloud MQTT"
         if device.client is not client:
             _LOGGER.info("Using %s for Oasis device %s", name, device.serial_number)
             device.attach_client(client)
+        if ble is not None:
+            if client is http:
+                if ble.address not in self._ble_syncing:
+                    self._async_suspend_ble(ble)
+            elif ble.suspended:
+                self._async_resume_ble(ble, device)
         return client
+
+    @callback
+    def _async_suspend_ble(self, client: OasisBleClient) -> None:
+        """Disconnect a device's Bluetooth while it's reached over local HTTP.
+
+        The table accepts a single Bluetooth connection, so this frees it (e.g. for
+        the Oasis Control app). The client is kept, so it reconnects right away
+        once HTTP is lost.
+        """
+        if client.suspended:
+            return
+        client.suspended = True
+        if task := self._ble_reconnect_tasks.pop(client.address, None):
+            task.cancel()
+        _LOGGER.debug(
+            "Local HTTP in use for Oasis device %s; disconnecting Bluetooth (%s)",
+            client.serial_number,
+            client.address,
+        )
+
+        async def _async_disconnect() -> None:
+            await client.async_disconnect()
+            # Entities that depend on the Bluetooth link (e.g. Enable HTTP mode)
+            self.async_update_listeners()
+
+        self.config_entry.async_create_background_task(
+            self.hass, _async_disconnect(), f"{DOMAIN} BLE suspend {client.address}"
+        )
+
+    @callback
+    def _async_resume_ble(self, client: OasisBleClient, device: OasisDevice) -> None:
+        """Reconnect a device's suspended Bluetooth once local HTTP isn't in use."""
+        client.suspended = False
+        _LOGGER.debug(
+            "Local HTTP not in use for Oasis device %s; reconnecting Bluetooth (%s)",
+            client.serial_number,
+            client.address,
+        )
+        if client.address not in self._ble_reconnect_tasks:
+            self._ble_reconnect_tasks[client.address] = (
+                self.config_entry.async_create_background_task(
+                    self.hass,
+                    self._async_ble_reconnect(client.address, client, device, 0),
+                    f"{DOMAIN} BLE reconnect {client.address}",
+                )
+            )
 
     @callback
     def async_update_host(self, device: OasisDevice, host: str, source: str) -> None:
@@ -1115,10 +1171,17 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
                     new_connections=device_entry.connections | {connection},
                 )
         client.attach_device(device)
+        # Synced in full even if local HTTP is in use, for the state only Bluetooth
+        # reports (e.g. remote access); it's suspended for HTTP afterwards
+        self._ble_syncing.add(address)
+        try:
+            self._async_select_client(device)
+            # Entities that depend on the Bluetooth link (e.g. Enable HTTP mode)
+            self.async_update_listeners()
+            await self._async_ble_sync(client, device)
+        finally:
+            self._ble_syncing.discard(address)
         self._async_select_client(device)
-        # Entities that depend on the Bluetooth link (e.g. Enable HTTP mode) update
-        self.async_update_listeners()
-        await self._async_ble_sync(client, device)
 
     async def _async_ble_sync(
         self, client: OasisBleClient, device: OasisDevice
@@ -1165,7 +1228,8 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         self._async_select_client(device)
         self.async_update_listeners()
 
-        if address not in self._ble_reconnect_tasks:
+        # Reconnected once local HTTP isn't in use
+        if not client.suspended and address not in self._ble_reconnect_tasks:
             self._ble_reconnect_tasks[address] = (
                 self.config_entry.async_create_background_task(
                     self.hass,
@@ -1175,13 +1239,15 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
             )
 
     async def _async_ble_reconnect(
-        self, address: str, client: OasisBleClient, device: OasisDevice
+        self,
+        address: str,
+        client: OasisBleClient,
+        device: OasisDevice,
+        delay: float = BLE_RECONNECT_DELAY,
     ) -> None:
         """Reconnect a dropped BLE client with backoff, then use it if it's preferred."""
         try:
-            if not await self._async_ble_retry(
-                address, client.async_connect, BLE_RECONNECT_DELAY
-            ):
+            if not await self._async_ble_retry(address, client.async_connect, delay):
                 self.ble_clients.pop(address, None)
                 await client.async_close()
                 return
@@ -1193,7 +1259,9 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         )
         self._async_select_client(device)
         self.async_update_listeners()
-        await self._async_ble_sync(client, device)
+        # Suspended again if local HTTP came back meanwhile
+        if not client.suspended:
+            await self._async_ble_sync(client, device)
 
     async def _async_ble_retry(
         self,

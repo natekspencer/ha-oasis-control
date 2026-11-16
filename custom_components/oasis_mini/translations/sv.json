@@ -148,8 +148,7 @@
         "name": "Fjärråtkomst",
         "state": {
           "active": "Aktiv",
-          "inactive": "Inaktiv",
-          "disabled": "Avstängd"
+          "inactive": "Inaktiv"
         }
       },
       "status": {
