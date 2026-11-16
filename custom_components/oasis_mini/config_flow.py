@@ -62,27 +62,25 @@ class OasisDeviceConfigFlow(ConfigFlow, domain=DOMAIN):
         the device registry, so this also works before the device has been reached
         since startup (when its MAC address isn't known yet).
         """
-        device_entry = dr.async_get(self.hass).async_get_device(
-            connections={
-                (dr.CONNECTION_NETWORK_MAC, dr.format_mac(discovery_info.macaddress))
-            }
+        connection = (
+            dr.CONNECTION_NETWORK_MAC,
+            dr.format_mac(discovery_info.macaddress),
         )
-        serials = {
-            serial
-            for domain, serial in (device_entry.identifiers if device_entry else ())
-            if domain == DOMAIN
-        }
-        for entry_id in device_entry.config_entries if device_entry else ():
-            entry = self.hass.config_entries.async_get_entry(entry_id)
-            if entry is None or entry.domain != DOMAIN:
+        device_registry = dr.async_get(self.hass)
+        for entry in self.hass.config_entries.async_entries(DOMAIN):
+            device_entry = device_registry.async_get_device_by_connection(
+                connection, entry.entry_id
+            )
+            if device_entry is None:
                 continue
             # Home Assistant doesn't report the same sighting again, so it's handed
             # to the entry's coordinator while it's loaded or setting up, and kept
             # for its next setup otherwise
-            for serial in serials:
-                await async_add_discovered_host(
-                    self.hass, entry.entry_id, serial, discovery_info.ip
-                )
+            for domain, serial in device_entry.identifiers:
+                if domain == DOMAIN:
+                    await async_add_discovered_host(
+                        self.hass, entry.entry_id, serial, discovery_info.ip
+                    )
         return self.async_abort(reason="already_configured")
 
     async def async_step_reauth(

@@ -324,14 +324,8 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
                             "Oasis device %s removed from account; cleaning up in HA",
                             serial,
                         )
-                        device_entry = device_registry.async_get_device(
-                            identifiers={(DOMAIN, serial)}
-                        )
-                        if device_entry:
-                            device_registry.async_update_device(
-                                device_id=device_entry.id,
-                                remove_config_entry_id=self.config_entry.entry_id,
-                            )
+                        if device_entry := self._device_entry(serial):
+                            device_registry.async_remove_device(device_entry.id)
 
                 # If logged in, but no devices on account, return without starting mqtt
                 if not devices:
@@ -462,11 +456,15 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
             self._device_cache_dirty = True
             self._store.async_delay_save(self._device_cache_data, 1)
 
+    def _device_entry(self, serial: str) -> dr.DeviceEntry | None:
+        """Return this config entry's registered device for a serial, if any."""
+        return dr.async_get(self.hass).async_get_device_by_identifier(
+            (DOMAIN, serial), self.config_entry.entry_id
+        )
+
     def _registered_mac(self, serial: str) -> str | None:
         """Return the network MAC address registered for a device, if any."""
-        device_entry = dr.async_get(self.hass).async_get_device(
-            identifiers={(DOMAIN, serial)}
-        )
+        device_entry = self._device_entry(serial)
         return next(
             (
                 value
@@ -1109,14 +1107,13 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
 
         _LOGGER.info("Using Bluetooth for Oasis device %s (%s)", serial, address)
         self.ble_clients[address] = client
-        device_registry = dr.async_get(self.hass)
-        if device_entry := device_registry.async_get_device(
-            identifiers={(DOMAIN, serial)}
-        ):
-            device_registry.async_update_device(
-                device_entry.id,
-                merge_connections={(dr.CONNECTION_BLUETOOTH, dr.format_mac(address))},
-            )
+        if device_entry := self._device_entry(serial):
+            connection = (dr.CONNECTION_BLUETOOTH, dr.format_mac(address))
+            if connection not in device_entry.connections:
+                dr.async_get(self.hass).async_update_device(
+                    device_entry.id,
+                    new_connections=device_entry.connections | {connection},
+                )
         client.attach_device(device)
         self._async_select_client(device)
         # Entities that depend on the Bluetooth link (e.g. Enable HTTP mode) update
