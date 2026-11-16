@@ -825,14 +825,7 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
             client.serial_number,
             client.address,
         )
-        if client.address not in self._ble_reconnect_tasks:
-            self._ble_reconnect_tasks[client.address] = (
-                self.config_entry.async_create_background_task(
-                    self.hass,
-                    self._async_ble_reconnect(client.address, client, device, 0),
-                    f"{DOMAIN} BLE reconnect {client.address}",
-                )
-            )
+        self._async_start_ble_reconnect(client.address, client, device, 0)
 
     @callback
     def async_update_host(self, device: OasisDevice, host: str, source: str) -> None:
@@ -1229,14 +1222,30 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
         self.async_update_listeners()
 
         # Reconnected once local HTTP isn't in use
-        if not client.suspended and address not in self._ble_reconnect_tasks:
-            self._ble_reconnect_tasks[address] = (
-                self.config_entry.async_create_background_task(
-                    self.hass,
-                    self._async_ble_reconnect(address, client, device),
-                    f"{DOMAIN} BLE reconnect {address}",
-                )
+        if not client.suspended:
+            self._async_start_ble_reconnect(address, client, device)
+
+    @callback
+    def _async_start_ble_reconnect(
+        self,
+        address: str,
+        client: OasisBleClient,
+        device: OasisDevice,
+        delay: float = BLE_RECONNECT_DELAY,
+    ) -> None:
+        """Start reconnecting a BLE client in the background, unless already doing so."""
+        if address in self._ble_reconnect_tasks:
+            return
+        self._ble_reconnect_tasks[address] = (
+            self.config_entry.async_create_background_task(
+                self.hass,
+                self._async_ble_reconnect(address, client, device, delay),
+                f"{DOMAIN} BLE reconnect {address}",
+                # Registered before it runs, so one that finishes right away (e.g.
+                # the device is out of range) still removes its own entry
+                eager_start=False,
             )
+        )
 
     async def _async_ble_reconnect(
         self,
@@ -1252,7 +1261,10 @@ class OasisDeviceCoordinator(DataUpdateCoordinator[list[OasisDevice]]):
                 await client.async_close()
                 return
         finally:
-            self._ble_reconnect_tasks.pop(address, None)
+            # A cancelled task may still be cleaning up after its replacement is
+            # registered, so it only removes its own entry
+            if self._ble_reconnect_tasks.get(address) is asyncio.current_task():
+                del self._ble_reconnect_tasks[address]
 
         _LOGGER.info(
             "Bluetooth restored for Oasis device %s (%s)", device.serial_number, address

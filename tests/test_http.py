@@ -265,6 +265,74 @@ async def test_http_lost_resumes_bluetooth(
     ble.async_disconnect.assert_not_awaited()
 
 
+async def test_resume_out_of_range_leaves_no_reconnect_task(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    init_integration: MockConfigEntry,
+) -> None:
+    """A resume that finds the table out of range doesn't block later reconnects."""
+    mock_device(aioclient_mock)
+    coordinator = await setup(hass, init_integration)
+    ble = ble_stub(is_connected=False, suspended=True)
+    ble.async_close = AsyncMock()
+    coordinator.ble_clients[BLE_ADDRESS] = ble
+
+    mock_device_offline(aioclient_mock)
+    with patch(
+        "homeassistant.components.bluetooth.async_address_present", return_value=False
+    ):
+        await poll(hass, coordinator)
+
+    assert BLE_ADDRESS not in coordinator.ble_clients
+    assert BLE_ADDRESS not in coordinator._ble_reconnect_tasks
+
+
+async def test_cancelled_reconnect_keeps_its_replacement(
+    hass: HomeAssistant,
+    aioclient_mock: AiohttpClientMocker,
+    init_integration: MockConfigEntry,
+) -> None:
+    """A cancelled reconnect still cleaning up doesn't drop its replacement's entry."""
+    mock_device(aioclient_mock)
+    coordinator = await setup(hass, init_integration)
+    device = coordinator.data[0]
+    connecting = asyncio.Event()
+    cleanup = asyncio.Event()
+    ble = ble_stub(is_connected=False)
+
+    async def _connect() -> None:
+        try:
+            connecting.set()
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            # Like tearing down a half-made connection
+            await cleanup.wait()
+            raise
+
+    ble.async_connect = AsyncMock(side_effect=_connect)
+    coordinator.ble_clients[BLE_ADDRESS] = ble
+
+    with patch(
+        "homeassistant.components.bluetooth.async_address_present", return_value=True
+    ):
+        coordinator._async_resume_ble(ble, device)
+        await connecting.wait()
+        first = coordinator._ble_reconnect_tasks[BLE_ADDRESS]
+        coordinator._async_suspend_ble(ble)
+        await asyncio.sleep(0)
+        connecting.clear()
+        coordinator._async_resume_ble(ble, device)
+        replacement = coordinator._ble_reconnect_tasks[BLE_ADDRESS]
+        cleanup.set()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert first.done()
+        assert coordinator._ble_reconnect_tasks.get(BLE_ADDRESS) is replacement
+        replacement.cancel()
+        await hass.async_block_till_done()
+
+
 async def test_bluetooth_found_during_http_synced_then_suspended(
     hass: HomeAssistant,
     aioclient_mock: AiohttpClientMocker,
