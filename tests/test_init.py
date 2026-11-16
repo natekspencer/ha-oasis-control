@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from custom_components.oasis_mini.const import DOMAIN
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
@@ -13,19 +15,21 @@ from .common import MockConfigEntry
 from .conftest import SERIAL_NUMBER
 
 
-async def test_retired_last_updated_sensor_removed(
+@pytest.mark.parametrize("key", ["last_updated", "remote_access"])
+async def test_retired_sensor_removed(
     hass: HomeAssistant,
     mock_config_entry: MockConfigEntry,
     mock_cloud_client: MagicMock,
     mock_mqtt_client: MagicMock,
+    key: str,
 ) -> None:
-    """The retired Last updated sensor is removed from the registry on setup."""
+    """Retired sensors are removed from the registry on setup."""
     mock_config_entry.add_to_hass(hass)
     entity_registry = er.async_get(hass)
     retired = entity_registry.async_get_or_create(
         "sensor",
         DOMAIN,
-        f"{SERIAL_NUMBER}-last_updated",
+        f"{SERIAL_NUMBER}-{key}",
         config_entry=mock_config_entry,
     )
     kept = entity_registry.async_get_or_create(

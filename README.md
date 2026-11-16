@@ -98,7 +98,7 @@ If the Oasis Control app shows **Remote access inactive**, the table can't be co
 
 These diagnostic entities show the related status in Home Assistant:
 
-- **Remote access** (disabled by default): the same state as the app: `Active` or `Inactive`. It's read over Bluetooth when Home Assistant connects (the last reading is kept while it's using HTTP instead), or shown as `Active` while the table is reporting through the cloud, and is unknown otherwise.
+- **Remote access** (binary sensor, disabled by default): the same state as the app: `Active` or `Inactive`. It's read over Bluetooth when Home Assistant connects (the last reading is kept while it's using HTTP instead), or shown as `Active` while the table is reporting through the cloud, and is unknown otherwise.
 - **Connection type** and **Connection**: how Home Assistant is reaching the table, and whether it's responding.
 - **Wi‑Fi status** (disabled by default): whether the table reports being connected to Wi‑Fi.
 

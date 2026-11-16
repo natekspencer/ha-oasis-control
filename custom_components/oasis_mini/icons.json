@@ -1,6 +1,12 @@
 {
   "entity": {
     "binary_sensor": {
+      "remote_access": {
+        "default": "mdi:cloud-check-outline",
+        "state": {
+          "off": "mdi:cloud-off-outline"
+        }
+      },
       "wifi_status": {
         "default": "mdi:wifi",
         "state": {
@@ -32,13 +38,6 @@
         "default": "mdi:alert-circle-outline",
         "state": {
           "0": "mdi:circle-outline"
-        }
-      },
-      "remote_access": {
-        "default": "mdi:cloud-question-outline",
-        "state": {
-          "active": "mdi:cloud-check-outline",
-          "inactive": "mdi:cloud-off-outline"
         }
       },
       "status": {

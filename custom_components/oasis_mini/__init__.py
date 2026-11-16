@@ -204,8 +204,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: OasisDeviceConfigEntry) 
 
 # Unique ID suffixes of entities that are no longer provided, by domain
 RETIRED_ENTITIES: dict[str, tuple[str, ...]] = {
-    # Replaced by the Connection (responding) binary sensor
-    Platform.SENSOR: ("-last_updated",),
+    # Replaced by the Connection (responding) binary sensor, and the Remote access
+    # binary sensor
+    Platform.SENSOR: ("-last_updated", "-remote_access"),
 }
 
 
